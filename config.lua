@@ -3,143 +3,241 @@
 -- config.lua
 ----------------------------------------------------------
 
+
+----------------------------------------------------------
+-- Module path
+----------------------------------------------------------
+
+package.path =
+    "/home/TurretOS/?.lua;"
+    ..
+    package.path
+
+
+
 local config = {}
 
+
+
 ----------------------------------------------------------
--- Общие настройки
+-- Version
 ----------------------------------------------------------
 
--- Версия программы
 config.version = "0.1.0"
 
--- Включить режим отладки
+
+
+----------------------------------------------------------
+-- General
+----------------------------------------------------------
+
 config.debug = false
 
--- Показывать интерфейс
 config.showUI = true
 
+
+
 ----------------------------------------------------------
--- Настройки турели
+-- Turret settings
 ----------------------------------------------------------
 
--- Выдвижение ствола (0-2)
 config.shaftLength = 2
 
--- Время между циклами
+
 config.loopDelay = 0.05
 
--- Задержка между выстрелами
+
 config.fireDelay = 0.15
 
+
+
 ----------------------------------------------------------
--- Обнаружение целей
+-- Detector settings
 ----------------------------------------------------------
 
 config.scan = {
 
+
     radius = 32,
+
 
     players = true,
 
+
     mobs = true,
+
 
     passive = false
 
+
 }
 
+
+
 ----------------------------------------------------------
--- Белый список
+-- Whitelist
 ----------------------------------------------------------
 
 config.whitelist = {
 
+
     hellbreez = true,
+
 
     lofland = true
 
+
 }
 
+
+
 ----------------------------------------------------------
--- Приоритет целей
+-- Target priority
 ----------------------------------------------------------
 
 config.priority = {
 
+
     players = 100,
+
 
     hostile = 50,
 
+
     passive = 10
+
 
 }
 
+
+
 ----------------------------------------------------------
--- Интерфейс
+-- Interface
 ----------------------------------------------------------
 
 config.ui = {
 
+
     title = "TurretOS",
+
 
     language = "ru",
 
+
     refresh = 0.2
+
 
 }
 
+
+
 ----------------------------------------------------------
--- Логи
+-- Logs
 ----------------------------------------------------------
 
 config.logs = {
 
+
     enabled = true,
 
-    history = "/home/TurretOS/history.log",
 
-    kills = "/home/TurretOS/kills.log",
+    directory =
+        "/home/TurretOS/logs",
 
-    errors = "/home/TurretOS/errors.log"
+
+    history =
+        "/home/TurretOS/logs/history.log",
+
+
+    kills =
+        "/home/TurretOS/logs/kills.log",
+
+
+    errors =
+        "/home/TurretOS/logs/errors.log"
+
 
 }
 
+
+
 ----------------------------------------------------------
--- Статистика
+-- Statistics
 ----------------------------------------------------------
 
 config.stats = {
 
-    file = "/home/TurretOS/stats.dat",
+
+    file =
+        "/home/TurretOS/stats.dat",
+
 
     autosave = 60
 
+
 }
 
+
+
 ----------------------------------------------------------
--- Цвета
+-- GUI colors
 ----------------------------------------------------------
 
 config.colors = {
 
+
     background = 0x1E1E1E,
+
 
     panel = 0x2B2B2B,
 
+
     border = 0x555555,
+
 
     text = 0xFFFFFF,
 
+
     green = 0x33CC33,
+
 
     yellow = 0xFFFF55,
 
+
     orange = 0xFFAA00,
+
 
     red = 0xFF4444,
 
+
     blue = 0x3399FF
 
+
 }
+
+
+
+----------------------------------------------------------
+-- Create directories
+----------------------------------------------------------
+
+local filesystem =
+    require("filesystem")
+
+
+
+if not filesystem.exists(
+    config.logs.directory
+)
+then
+
+    filesystem.makeDirectory(
+        config.logs.directory
+    )
+
+end
+
+
 
 ----------------------------------------------------------
 
