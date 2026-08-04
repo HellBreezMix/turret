@@ -1,7 +1,7 @@
 -- ============================================================
 --  ECS® Security Systems — Multi-Turret Control
 --  OpenComputers + OpenSecurity
---  Мониторы 3×2 | Много турелей | Мобы + игроки
+--  Без модуля thread (совместимо со всеми OpenOS)
 -- ============================================================
 
 local component = require("component")
@@ -9,37 +9,20 @@ local event     = require("event")
 local term      = require("term")
 local gpu       = component.gpu
 local computer  = require("computer")
-local thread    = require("thread")
 
 -- ===================== НАСТРОЙКИ =====================
 local SCAN_RANGE    = 48
 local AIM_HEIGHT    = 1.2
 local FIRE_COOLDOWN = 0.22
-local UPDATE_GUI    = 0.12
+local UPDATE_GUI    = 0.15
+local COMBAT_EVERY  = 0.20   -- как часто стрелять (сек)
 
---[[
-  КОНФИГ ТУРЕЛЕЙ
-  addr  — адрес компонента (можно оставить nil = авто-поиск всех)
-  x,y,z — смещение турели относительно Entity Detector
-  name  — отображаемое имя (необязательно)
-
-  Пример: детектор в (0,0,0), турель на 3 блока выше и 2 блока на восток:
-    { x = 2, y = 3, z = 0, name = "Север" }
-]]
 local TURRET_CONFIG = {
-  -- Авто: все найденные турели получат offset по умолчанию
-  -- Раскомментируй и укажи адреса/смещения когда будет несколько:
-  --
-  -- { addr = "06771fc7-...", x =  0, y = 2, z =  0, name = "Центр" },
-  -- { addr = "1e069026-...", x =  3, y = 2, z =  0, name = "Восток" },
-  -- { addr = "45d53caf-...", x = -3, y = 2, z =  0, name = "Запад" },
-  -- { addr = "28c6a800-...", x =  0, y = 2, z =  3, name = "Север" },
+  -- { addr = "06771fc7", x = 0, y = 2, z = 0, name = "Центр" },
 }
 
--- Offset по умолчанию, если турель не прописана в TURRET_CONFIG
 local DEFAULT_OFFSET = { x = 0, y = 2, z = 0 }
 
--- Цвета
 local C = {
   bg=0x0A0A14, panel=0x141420, border=0x3A3A60, text=0xD8D8F0,
   yellow=0xFFD700, green=0x22DD55, red=0xFF3344, purple=0xAA55FF,
@@ -48,13 +31,14 @@ local C = {
 }
 
 -- ===================== СОСТОЯНИЕ =====================
-local turrets   = {}   -- {addr, proxy, powered, ox,oy,oz, name}
+local turrets   = {}
 local detector  = nil
 local attackMobs    = true
 local attackPlayers = true
 local whitelist     = {}
 local running       = true
-local lastFire      = {}   -- [addr] = uptime  (отдельный кулдаун на турель)
+local lastFire      = {}
+local lastCombat    = 0
 local screenW, screenH = 80, 25
 local buttons = {}
 
@@ -111,7 +95,7 @@ end
 -- ===================== ТУРЕЛИ =====================
 local function getConfigFor(addr)
   for _, cfg in ipairs(TURRET_CONFIG) do
-    if cfg.addr and addr:sub(1, #cfg.addr) == cfg.addr or cfg.addr == addr then
+    if cfg.addr and (addr:sub(1, #cfg.addr) == cfg.addr or cfg.addr == addr) then
       return cfg
     end
   end
@@ -124,7 +108,6 @@ local function refreshTurrets()
     found[addr] = true
   end
 
-  -- обновляем существующие / добавляем новые
   local newList = {}
   for addr in pairs(found) do
     local existing = nil
@@ -144,18 +127,15 @@ local function refreshTurrets()
       local oy = (cfg and cfg.y) or DEFAULT_OFFSET.y
       local oz = (cfg and cfg.z) or DEFAULT_OFFSET.z
       local name = (cfg and cfg.name) or ("T-" .. addr:sub(1,6))
-
       local powered = false
       pcall(function() powered = p.isPowered() end)
-
       table.insert(newList, {
-        addr = addr, proxy = p, powered = powered,
-        ox = ox, oy = oy, oz = oz, name = name
+        addr=addr, proxy=p, powered=powered,
+        ox=ox, oy=oy, oz=oz, name=name
       })
       lastFire[addr] = 0
     end
   end
-
   table.sort(newList, function(a,b) return a.addr < b.addr end)
   turrets = newList
 end
@@ -225,7 +205,6 @@ end
 local function aimAndFire(t, ent)
   if not t.powered or not t.proxy then return end
 
-  -- координаты цели относительно ЭТОЙ турели
   local dx = (ent.x or 0) - t.ox
   local dy = (ent.y or 0) - t.oy + AIM_HEIGHT
   local dz = (ent.z or 0) - t.oz
@@ -239,7 +218,6 @@ local function aimAndFire(t, ent)
   pitch = math.max(-45, math.min(90, pitch))
 
   pcall(function() t.proxy.moveTo(yaw, pitch) end)
-  os.sleep(0.05)
 
   local ready = false
   pcall(function() ready = t.proxy.isReady() end)
@@ -251,60 +229,45 @@ local function aimAndFire(t, ent)
   end
 end
 
-local function combatLoop()
-  while running do
-    local anyOn = false
-    for _, t in ipairs(turrets) do
-      if t.powered then anyOn = true; break end
-    end
+local function doCombat()
+  local anyOn = false
+  for _, t in ipairs(turrets) do
+    if t.powered then anyOn = true; break end
+  end
+  if not anyOn or not (attackMobs or attackPlayers) then return end
 
-    if anyOn and (attackMobs or attackPlayers) then
-      local ents = getEntities()
-      -- ближайшие первыми
-      table.sort(ents, function(a,b)
-        local da = (a.x or 0)^2 + (a.y or 0)^2 + (a.z or 0)^2
-        local db = (b.x or 0)^2 + (b.y or 0)^2 + (b.z or 0)^2
-        return da < db
-      end)
+  local ents = getEntities()
+  table.sort(ents, function(a,b)
+    local da = (a.x or 0)^2 + (a.y or 0)^2 + (a.z or 0)^2
+    local db = (b.x or 0)^2 + (b.y or 0)^2 + (b.z or 0)^2
+    return da < db
+  end)
 
-      for _, ent in ipairs(ents) do
-        if shouldAttack(ent) then
-          -- все включённые турели стреляют в эту цель
-          for _, t in ipairs(turrets) do
-            if t.powered then aimAndFire(t, ent) end
-          end
-          break
-        end
+  for _, ent in ipairs(ents) do
+    if shouldAttack(ent) then
+      for _, t in ipairs(turrets) do
+        if t.powered then aimAndFire(t, ent) end
       end
+      break
     end
-    os.sleep(0.12)
   end
 end
 
 -- ===================== GUI =====================
 local function drawCard(idx, t, x, y, w, h)
   box(x, y, w, h, C.border, C.panel)
-
   local title = t.name or ("T-"..t.addr:sub(1,6))
   txt(x+2, y+1, title, C.yellow, C.panel)
   txt(x+2, y+2, t.addr:sub(1,12).."…", C.gray, C.panel)
-
-  -- иконка
   txt(x+4, y+4, "  ███  ", C.purple, C.panel)
   txt(x+4, y+5, " █████ ", C.purple, C.panel)
   txt(x+4, y+6, "  ▀▀▀  ", C.gray,  C.panel)
-
-  -- offset info
   txt(x+2, y+7, string.format("Δ %d,%d,%d", t.ox, t.oy, t.oz), C.cyan, C.panel)
-
-  -- энергия-бар
   local barW = w - 4
   fill(x+2, y+8, barW, 1, C.energyBg)
   fill(x+2, y+8, t.powered and math.floor(barW*0.9) or math.floor(barW*0.12), 1, C.energy)
-
-  local bOn  = btn(x+2,     y+h-2, 6, 1, "ВКЛ",  t.powered,     C.yellow)
-  local bOff = btn(x+w-8,   y+h-2, 6, 1, "ВЫКЛ", not t.powered, C.gray)
-
+  local bOn  = btn(x+2,   y+h-2, 6, 1, "ВКЛ",  t.powered,     C.yellow)
+  local bOff = btn(x+w-8, y+h-2, 6, 1, "ВЫКЛ", not t.powered, C.gray)
   buttons["on_"..idx]  = {x=bOn.x,  y=bOn.y,  w=6,h=1, action=function() powerTurret(t,true)  end}
   buttons["off_"..idx] = {x=bOff.x, y=bOff.y, w=6,h=1, action=function() powerTurret(t,false) end}
 end
@@ -312,7 +275,6 @@ end
 local function drawBottom()
   local y = screenH - 2
   fill(1, y, screenW, 2, C.panel)
-
   local items = {
     {id="all_on",  label="Турели ВКЛ",      active=true,          col=C.yellow},
     {id="all_off", label="Турели ВЫКЛ",     active=true,          col=C.gray},
@@ -321,7 +283,6 @@ local function drawBottom()
     {id="players", label="Атака игроков",   active=attackPlayers, col=C.yellow},
     {id="exit",    label="Выход",           active=true,          col=C.red},
   }
-
   local bx = 2
   for _, it in ipairs(items) do
     local bw = #it.label + 2
@@ -347,7 +308,6 @@ end
 local function drawUI()
   buttons = {}
   fill(1,1,screenW,screenH, C.bg)
-
   center(1, "═══ ECS® Security Systems ═══", C.title, C.bg)
   txt(2, 2, string.format("Турелей: %d  |  Детектор: %s  |  Радиус: %d",
     #turrets, detector and "OK" or "НЕТ", SCAN_RANGE), C.text, C.bg)
@@ -377,7 +337,6 @@ local function drawUI()
   txt(2, screenH-4, string.format("Мобы: %s  |  Игроки: %s  |  Белый список: %d",
     attackMobs and "ВКЛ" or "ВЫКЛ",
     attackPlayers and "ВКЛ" or "ВЫКЛ", wl), C.text, C.bg)
-
   drawBottom()
 end
 
@@ -394,22 +353,31 @@ local function main()
     return
   end
 
-  local combat = thread.create(combatLoop)
   local lastDraw = 0
-
   while running do
     local now = computer.uptime()
+
+    -- GUI
     if now - lastDraw >= UPDATE_GUI then
       refreshTurrets()
       drawUI()
       lastDraw = now
     end
 
-    local e,_,x,y,button = event.pull(0.04)
+    -- Бой (без thread)
+    if now - lastCombat >= COMBAT_EVERY then
+      doCombat()
+      lastCombat = now
+    end
+
+    -- Клики
+    local e, _, x, y, button = event.pull(0.05)
     if e == "touch" and button == 0 then
       for _, b in pairs(buttons) do
         if x >= b.x and x < b.x+b.w and y >= b.y and y < b.y+b.h then
-          b.action(); drawUI(); break
+          b.action()
+          drawUI()
+          break
         end
       end
     elseif e == "interrupted" then
@@ -418,7 +386,6 @@ local function main()
   end
 
   powerAll(false)
-  pcall(function() combat:kill() end)
   term.clear()
   print("Система безопасности отключена.")
 end
