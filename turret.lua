@@ -1,6 +1,6 @@
 -- ============================================================
---  ECS® Security Systems v10
---  Формула #4: atan2(dx, -dz) + тонкая подстройка
+--  ECS® Security Systems v11
+--  Относительный режим (без калибровки) + запасной абсолютный
 -- ============================================================
 
 local component = require("component")
@@ -18,12 +18,12 @@ local COMBAT_EVERY  = 0.30
 local LOCK_TIME     = 3.0
 local CONFIG_PATH   = "/home/turret_cfg.lua"
 
--- Детектор над турелью через 1 блок
+-- Детектор строго над турелью через 1 блок
 local OFFSET = { x = 0, y = -2, z = 0 }
 
-local yawFine = 0       -- тонкая подстройка ± градусы
+local yawFine = 0
 local pitchSign = 1
-local aimHeight = 1.0   -- куда целиться по телу (0 = ноги, 1 = грудь)
+local aimHeight = 1.0
 
 local C = {
   bg=0x0A0A14, panel=0x141420, border=0x3A3A60, text=0xD8D8F0,
@@ -40,20 +40,16 @@ local lastFire, lastCombat, lastDraw = {}, 0, 0
 local lastTarget, statusMsg, debugMsg = "—", "", ""
 local screenW, screenH = 80, 25
 local buttons = {}
-local DETECTOR_POS = nil
+local DETECTOR_POS = nil   -- только для абсолютного режима
+local coordMode = "auto"   -- auto | relative | absolute
 local lockedTarget = nil
 
--- ===================== CONFIG =====================
 local function saveConfig()
   local data = {
-    detector = DETECTOR_POS,
-    whitelist = whitelist,
-    attackMobs = attackMobs,
-    attackPlayers = attackPlayers,
-    yawFine = yawFine,
-    pitchSign = pitchSign,
-    aimHeight = aimHeight,
-    offset = OFFSET,
+    detector = DETECTOR_POS, whitelist = whitelist,
+    attackMobs = attackMobs, attackPlayers = attackPlayers,
+    yawFine = yawFine, pitchSign = pitchSign, aimHeight = aimHeight,
+    offset = OFFSET, coordMode = coordMode,
   }
   local f = io.open(CONFIG_PATH, "w")
   if f then f:write(serialization.serialize(data)) f:close() end
@@ -74,9 +70,9 @@ local function loadConfig()
   pitchSign = data.pitchSign or 1
   aimHeight = data.aimHeight or 1.0
   if data.offset then OFFSET = data.offset end
+  coordMode = data.coordMode or "auto"
 end
 
--- ===================== GUI =====================
 local function setResolution()
   local maxW, maxH = gpu.maxResolution()
   screenW, screenH = maxW, maxH
@@ -89,24 +85,20 @@ local function fill(x,y,w,h,bg,fg,ch)
   if fg then gpu.setForeground(fg) end
   gpu.fill(x,y,w,h, ch or " ")
 end
-
 local function txt(x,y,str,fg,bg)
   if bg then gpu.setBackground(bg) end
   if fg then gpu.setForeground(fg) end
   gpu.set(x,y, tostring(str))
 end
-
 local function center(y,str,fg,bg)
   txt(math.floor((screenW-#str)/2)+1, y, str, fg, bg)
 end
-
 local function box(x,y,w,h,border,bg)
   fill(x,y,w,h, bg or C.panel)
   gpu.setBackground(border or C.border)
   gpu.fill(x,y,w,1," "); gpu.fill(x,y+h-1,w,1," ")
   gpu.fill(x,y,1,h," "); gpu.fill(x+w-1,y,1,h," ")
 end
-
 local function btn(x,y,w,h,label,active,color)
   local bg = active and (color or C.yellow) or C.gray
   local fg = active and C.dark or C.text
@@ -115,24 +107,23 @@ local function btn(x,y,w,h,label,active,color)
   return {x=x,y=y,w=w,h=h}
 end
 
--- ===================== КАЛИБРОВКА =====================
 local function calibrateDetector()
   if not detector then return false end
   local players = {}
   pcall(function() players = detector.scanPlayers(5) or {} end)
   if #players == 0 then
-    statusMsg = "Встань рядом с детектором"
+    statusMsg = "Встань у детектора"
     return false
   end
   table.sort(players, function(a,b) return (a.range or 99) < (b.range or 99) end)
   local p = players[1]
   DETECTOR_POS = { x = p.x or 0, y = p.y or 0, z = p.z or 0 }
+  coordMode = "absolute"
   saveConfig()
-  statusMsg = string.format("Дет: %.1f, %.1f, %.1f", DETECTOR_POS.x, DETECTOR_POS.y, DETECTOR_POS.z)
+  statusMsg = string.format("Абс. режим: %.1f, %.1f, %.1f", DETECTOR_POS.x, DETECTOR_POS.y, DETECTOR_POS.z)
   return true
 end
 
--- ===================== ТУРЕЛИ =====================
 local function refreshTurrets()
   local found, newList = {}, {}
   for addr in component.list("os_energyturret") do found[addr] = true end
@@ -163,10 +154,8 @@ end
 local function powerTurret(t, on)
   pcall(function()
     if on then
-      t.proxy.powerOn()
-      os.sleep(0.15)
-      pcall(function() t.proxy.extendShaft(2) end)
-      os.sleep(0.1)
+      t.proxy.powerOn(); os.sleep(0.12)
+      pcall(function() t.proxy.extendShaft(2) end); os.sleep(0.08)
       t.proxy.setArmed(true)
     else
       pcall(function() t.proxy.setArmed(false) end)
@@ -182,7 +171,6 @@ local function powerAll(on)
   for _, t in ipairs(turrets) do powerTurret(t, on) end
 end
 
--- ===================== ЦЕЛИ =====================
 local function isPlayer(ent)
   if not ent then return false end
   if ent.name == "Player" then return true end
@@ -217,20 +205,48 @@ local function getEntities()
   return list
 end
 
--- ===================== ПРИЦЕЛ (формула 4) =====================
-local function computeAim(ent)
-  local bx = DETECTOR_POS.x + OFFSET.x
-  local by = DETECTOR_POS.y + OFFSET.y
-  local bz = DETECTOR_POS.z + OFFSET.z
+-- Определяем: координаты относительные или мировые
+local function detectCoordMode(ents)
+  if coordMode == "relative" or coordMode == "absolute" then return coordMode end
+  for _, e in ipairs(ents) do
+    local ax = math.abs(e.x or 0)
+    local az = math.abs(e.z or 0)
+    if ax > 80 or az > 80 then
+      return "absolute"
+    end
+  end
+  return "relative"
+end
 
-  local dx = (ent.x or 0) - bx
-  local dy = ((ent.y or 0) + aimHeight) - by
-  local dz = (ent.z or 0) - bz
+-- Вектор от ствола к цели
+local function aimVector(ent, mode)
+  if mode == "relative" then
+    -- ent.x/y/z уже от детектора; ствол = OFFSET от детектора
+    local dx = (ent.x or 0) - OFFSET.x
+    local dy = ((ent.y or 0) + aimHeight) - OFFSET.y
+    local dz = (ent.z or 0) - OFFSET.z
+    return dx, dy, dz
+  else
+    -- мировые координаты
+    if not DETECTOR_POS then return nil end
+    local bx = DETECTOR_POS.x + OFFSET.x
+    local by = DETECTOR_POS.y + OFFSET.y
+    local bz = DETECTOR_POS.z + OFFSET.z
+    local dx = (ent.x or 0) - bx
+    local dy = ((ent.y or 0) + aimHeight) - by
+    local dz = (ent.z or 0) - bz
+    return dx, dy, dz
+  end
+end
+
+local function computeAim(ent, mode)
+  local dx, dy, dz = aimVector(ent, mode)
+  if not dx then return nil end
 
   local distXZ = math.sqrt(dx*dx + dz*dz)
   local dist   = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-  -- Формула #4
+  -- формула #4
   local yaw = math.deg(math.atan2(dx, -dz)) + yawFine
   yaw = yaw % 360
   if yaw < 0 then yaw = yaw + 360 end
@@ -241,8 +257,8 @@ local function computeAim(ent)
   return yaw, pitch, dist, distXZ
 end
 
-local function aimAndFire(t, ent)
-  if not t.proxy or not DETECTOR_POS then return false end
+local function aimAndFire(t, ent, mode)
+  if not t.proxy then return false end
 
   pcall(function()
     t.proxy.powerOn()
@@ -250,31 +266,30 @@ local function aimAndFire(t, ent)
     t.proxy.setArmed(true)
   end)
 
-  local yaw, pitch, dist, distXZ = computeAim(ent)
-  if dist < 2.0 or dist > SCAN_RANGE + 8 then
-    debugMsg = string.format("дист:%.1f (слишком близко/далеко)", dist)
+  local yaw, pitch, dist = computeAim(ent, mode)
+  if not yaw then
+    debugMsg = "нужна калибровка (абс. координаты)"
+    return false
+  end
+  if dist < 2 or dist > SCAN_RANGE + 8 then
+    debugMsg = string.format("дист:%.1f", dist)
     return false
   end
 
-  -- наведение
   pcall(function() t.proxy.moveTo(yaw, pitch) end)
 
-  -- ждём пока довернётся (до 0.6 сек)
-  local wait = 0
-  local onTarget = false
-  while wait < 0.6 do
+  local wait, onTarget = 0, false
+  while wait < 0.55 do
     pcall(function() onTarget = t.proxy.isOnTarget() end)
     if onTarget then break end
     os.sleep(0.05)
     wait = wait + 0.05
   end
-
-  -- дополнительная пауза на стабилизацию
-  os.sleep(0.08)
+  os.sleep(0.06)
 
   local now = computer.uptime()
-  debugMsg = string.format("y:%.0f p:%.0f d:%.1f fine:%+d on:%s",
-    yaw, pitch, dist, yawFine, tostring(onTarget))
+  debugMsg = string.format("%s y:%.0f p:%.0f d:%.1f fine:%+d",
+    mode, yaw, pitch, dist, yawFine)
 
   if (now - (lastFire[t.addr] or 0)) < FIRE_COOLDOWN then return false end
 
@@ -286,23 +301,24 @@ local function aimAndFire(t, ent)
 end
 
 local function doCombat()
-  if not DETECTOR_POS then
-    lastTarget = "нужна калибровка"
-    return
-  end
-
   local anyOn = false
   for _, t in ipairs(turrets) do if t.powered then anyOn = true break end end
   if not anyOn then lastTarget = "турели выкл" return end
   if not (attackMobs or attackPlayers) then lastTarget = "атака выкл" return end
 
   local ents = getEntities()
-  statusMsg = "Скан: " .. #ents
   if #ents == 0 then lastTarget = "нет целей" lockedTarget = nil return end
 
+  local mode = detectCoordMode(ents)
+  if mode == "absolute" and not DETECTOR_POS then
+    lastTarget = "абс. координаты → нужна калибровка"
+    statusMsg = "Встань у детектора и нажми Калибровка"
+    return
+  end
+
+  statusMsg = "Скан: "..#ents.." | режим: "..mode
+
   local now = computer.uptime()
-  local bx = DETECTOR_POS.x + OFFSET.x
-  local bz = DETECTOR_POS.z + OFFSET.z
   local target = nil
 
   if lockedTarget and now < (lockedTarget.lockUntil or 0) then
@@ -323,9 +339,7 @@ local function doCombat()
     table.sort(ents, function(a,b)
       local ap, bp = isPlayer(a), isPlayer(b)
       if ap ~= bp then return not ap end
-      local da = ((a.x or 0)-bx)^2 + ((a.z or 0)-bz)^2
-      local db = ((b.x or 0)-bx)^2 + ((b.z or 0)-bz)^2
-      return da < db
+      return (a.range or 999) < (b.range or 999)
     end)
     for _, ent in ipairs(ents) do
       if shouldAttack(ent) then
@@ -341,23 +355,20 @@ local function doCombat()
   end
 
   if not target then lastTarget = "белый список" return end
-
   lastTarget = tostring(target.name)
-  statusMsg = string.format("Скан: %d | %s | подстр:%+d°", #ents, lastTarget, yawFine)
 
   for _, t in ipairs(turrets) do
-    if t.powered then aimAndFire(t, target) end
+    if t.powered then aimAndFire(t, target, mode) end
   end
 end
 
--- ===================== GUI =====================
 local function drawCard(idx, t, x, y, w, h)
   box(x, y, w, h, C.border, C.panel)
   txt(x+2, y+1, t.name, C.yellow, C.panel)
   txt(x+2, y+2, t.addr:sub(1,14), C.gray, C.panel)
   txt(x+4, y+4, "  ███  ", C.purple, C.panel)
   txt(x+4, y+5, " █████ ", C.purple, C.panel)
-  txt(x+2, y+7, string.format("подстр: %+d°  накл: %d", yawFine, pitchSign), C.cyan, C.panel)
+  txt(x+2, y+7, string.format("смещ 0,%d,0 | %+d°", OFFSET.y, yawFine), C.cyan, C.panel)
 
   local barW = w - 4
   fill(x+2, y+8, barW, 1, C.energyBg)
@@ -393,16 +404,13 @@ local function drawBottom()
       elseif it.id=="all_off" then powerAll(false)
       elseif it.id=="calib" then calibrateDetector()
       elseif it.id=="left" then
-        yawFine = yawFine - 2
-        saveConfig()
+        yawFine = yawFine - 2; saveConfig()
         statusMsg = "Подстройка: "..yawFine.."°"
       elseif it.id=="right" then
-        yawFine = yawFine + 2
-        saveConfig()
+        yawFine = yawFine + 2; saveConfig()
         statusMsg = "Подстройка: "..yawFine.."°"
       elseif it.id=="flipP" then
-        pitchSign = -pitchSign
-        saveConfig()
+        pitchSign = -pitchSign; saveConfig()
         statusMsg = "Наклон: "..pitchSign
       elseif it.id=="mobs" then attackMobs = not attackMobs; saveConfig()
       elseif it.id=="players" then attackPlayers = not attackPlayers; saveConfig()
@@ -417,13 +425,8 @@ local function drawUI()
   buttons = {}
   fill(1,1,screenW,screenH, C.bg)
   center(1, "═══ ECS® Security Systems ═══", C.title, C.bg)
-
-  if DETECTOR_POS then
-    txt(2, 2, string.format("Турелей: %d | Формула #4 | подстр: %+d°",
-      #turrets, yawFine), C.text, C.bg)
-  else
-    txt(2, 2, "Встань у детектора → [Калибровка]", C.orange, C.bg)
-  end
+  txt(2, 2, string.format("Турелей: %d | смещение: 0,%d,0 | подстр: %+d°",
+    #turrets, OFFSET.y, yawFine), C.text, C.bg)
 
   local cols = math.min(4, math.max(1, #turrets))
   if #turrets == 0 then cols = 1 end
@@ -443,7 +446,6 @@ local function drawUI()
   drawBottom()
 end
 
--- ===================== MAIN =====================
 local function main()
   setResolution()
   term.clear()
