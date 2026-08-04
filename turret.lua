@@ -1,6 +1,6 @@
 -- ============================================================
---  ECS® Security Systems — Multi-Turret Control v6.3
---  Фикс прицела вблизи (под турелью)
+--  ECS® Security Systems v7
+--  Отдельная калибровка ТУРЕЛИ (не детектора)
 -- ============================================================
 
 local component = require("component")
@@ -12,17 +12,11 @@ local fs        = require("filesystem")
 local serialization = require("serialization")
 
 local SCAN_RANGE    = 48
-local FIRE_COOLDOWN = 0.28
+local FIRE_COOLDOWN = 0.35
 local UPDATE_GUI    = 0.25
-local COMBAT_EVERY  = 0.25
-local LOCK_TIME     = 2.5
+local COMBAT_EVERY  = 0.30
+local LOCK_TIME     = 3.0
 local CONFIG_PATH   = "/home/turret_cfg.lua"
-
-local barrelHeight = 2.0
-local pitchSign = 1
-local yawOffset = 180
-local yawFine = 0          -- тонкая подстройка в градусах (−15…+15)
-local lastGoodYaw = 0
 
 local C = {
   bg=0x0A0A14, panel=0x141420, border=0x3A3A60, text=0xD8D8F0,
@@ -39,20 +33,22 @@ local lastFire, lastCombat, lastDraw = {}, 0, 0
 local lastTarget, statusMsg, debugMsg = "—", "", ""
 local screenW, screenH = 80, 25
 local buttons = {}
-local DETECTOR_POS = nil
+
+-- Позиция СТВОЛА турели в мире (главное!)
+local TURRET_POS = nil
 local lockedTarget = nil
+local yawAdd = 0
+local pitchSign = 1
 
 -- ===================== CONFIG =====================
 local function saveConfig()
   local data = {
-    detector = DETECTOR_POS,
+    turret = TURRET_POS,
     whitelist = whitelist,
     attackMobs = attackMobs,
     attackPlayers = attackPlayers,
-    barrelHeight = barrelHeight,
+    yawAdd = yawAdd,
     pitchSign = pitchSign,
-    yawOffset = yawOffset,
-    yawFine = yawFine,
   }
   local f = io.open(CONFIG_PATH, "w")
   if f then f:write(serialization.serialize(data)) f:close() end
@@ -65,14 +61,12 @@ local function loadConfig()
   local raw = f:read("*a"); f:close()
   local ok, data = pcall(serialization.unserialize, raw)
   if not ok or type(data) ~= "table" then return end
-  DETECTOR_POS = data.detector or DETECTOR_POS
+  TURRET_POS = data.turret or data.detector or TURRET_POS
   whitelist = data.whitelist or whitelist
   if data.attackMobs ~= nil then attackMobs = data.attackMobs end
   if data.attackPlayers ~= nil then attackPlayers = data.attackPlayers end
-  barrelHeight = data.barrelHeight or barrelHeight
+  yawAdd = data.yawAdd or yawAdd
   pitchSign = data.pitchSign or pitchSign
-  yawOffset = data.yawOffset or yawOffset
-  yawFine = data.yawFine or yawFine
 end
 
 -- ===================== GUI =====================
@@ -114,32 +108,30 @@ local function btn(x,y,w,h,label,active,color)
   return {x=x,y=y,w=w,h=h}
 end
 
--- ===================== АВТОКАЛИБРОВКА =====================
-local function autoCalibrateDetector(force)
-  if DETECTOR_POS and not force then return true end
-  if not detector then return false end
-
-  local players = {}
-  pcall(function() players = detector.scanPlayers(4) or {} end)
-  if #players == 0 then
-    statusMsg = "Калибровка: встань рядом с детектором"
+-- ===================== КАЛИБРОВКА ТУРЕЛИ =====================
+-- Встань ПОД турель (или вплотную к основанию) и нажми кнопку
+local function calibrateTurret()
+  if not detector then
+    statusMsg = "Нет детектора"
     return false
   end
-
+  local players = {}
+  pcall(function() players = detector.scanPlayers(6) or {} end)
+  if #players == 0 then
+    statusMsg = "Встань ПОД турель и нажми ещё раз"
+    return false
+  end
   table.sort(players, function(a,b) return (a.range or 99) < (b.range or 99) end)
   local p = players[1]
-  if (p.range or 99) > 3.5 then
-    statusMsg = "Подойди ближе к детектору ("..string.format("%.1f", p.range)..")"
-    return false
-  end
 
-  DETECTOR_POS = {
-    x = math.floor((p.x or 0) + 0.5),
-    y = math.floor((p.y or 0) + 0.5),
-    z = math.floor((p.z or 0) + 0.5),
+  -- позиция игрока + высота до ствола (~2-3 блока вверх от ног, если стоишь внизу)
+  TURRET_POS = {
+    x = (p.x or 0),
+    y = (p.y or 0) + 2.5,  -- ствол выше головы/пола
+    z = (p.z or 0),
   }
   saveConfig()
-  statusMsg = string.format("Детектор: %d, %d, %d", DETECTOR_POS.x, DETECTOR_POS.y, DETECTOR_POS.z)
+  statusMsg = string.format("Турель: %.1f, %.1f, %.1f", TURRET_POS.x, TURRET_POS.y, TURRET_POS.z)
   return true
 end
 
@@ -157,10 +149,7 @@ local function refreshTurrets()
       local p = component.proxy(addr)
       local powered = false
       pcall(function() powered = p.isPowered() end)
-      table.insert(newList, {
-        addr = addr, proxy = p, powered = powered,
-        name = "T-" .. addr:sub(1,6),
-      })
+      table.insert(newList, {addr=addr, proxy=p, powered=powered, name="T-"..addr:sub(1,6)})
       lastFire[addr] = 0
     end
   end
@@ -178,9 +167,9 @@ local function powerTurret(t, on)
   pcall(function()
     if on then
       t.proxy.powerOn()
-      os.sleep(0.12)
+      os.sleep(0.15)
       pcall(function() t.proxy.extendShaft(2) end)
-      os.sleep(0.08)
+      os.sleep(0.1)
       t.proxy.setArmed(true)
     else
       pcall(function() t.proxy.setArmed(false) end)
@@ -231,47 +220,33 @@ local function getEntities()
   return list
 end
 
--- ===================== НАВЕДЕНИЕ =====================
+-- ===================== НАВЕДЕНИЕ ОТ СТВОЛА =====================
 local function computeAim(ent)
+  -- цель: грудь
   local tx = ent.x or 0
-  local ty = (ent.y or 0) + 1.0   -- центр тела
+  local ty = (ent.y or 0) + 1.0
   local tz = ent.z or 0
 
-  local bx = DETECTOR_POS.x
-  local by = DETECTOR_POS.y + barrelHeight
-  local bz = DETECTOR_POS.z
-
-  local dx = tx - bx
-  local dy = ty - by
-  local dz = tz - bz
+  local dx = tx - TURRET_POS.x
+  local dy = ty - TURRET_POS.y
+  local dz = tz - TURRET_POS.z
 
   local distXZ = math.sqrt(dx*dx + dz*dz)
   local dist   = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-  local yaw
-  if distXZ < 1.2 then
-    -- почти под стволом — горизонтальный угол ненадёжен, оставляем прошлый
-    yaw = lastGoodYaw
-  else
-    yaw = math.deg(math.atan2(dx, dz)) + yawOffset + yawFine
-    yaw = yaw % 360
-    if yaw < 0 then yaw = yaw + 360 end
-    lastGoodYaw = yaw
-  end
+  -- Формула как в рабочих скриптах OpenSecurity
+  local yaw = math.deg(math.atan2(dx, dz)) + yawAdd
+  yaw = yaw % 360
+  if yaw < 0 then yaw = yaw + 360 end
 
-  local pitch = math.deg(math.atan2(dy, math.max(distXZ, 0.15))) * pitchSign
-
-  -- вблизи не уводим в пол слишком резко
-  if distXZ < 4 then
-    pitch = math.max(pitch, -35)
-  end
+  local pitch = math.deg(math.atan2(dy, math.max(distXZ, 0.1))) * pitchSign
   pitch = math.max(-45, math.min(90, pitch))
 
   return yaw, pitch, dist, distXZ
 end
 
 local function aimAndFire(t, ent)
-  if not t.proxy or not DETECTOR_POS then return false end
+  if not t.proxy or not TURRET_POS then return false end
 
   pcall(function()
     t.proxy.powerOn()
@@ -279,18 +254,27 @@ local function aimAndFire(t, ent)
     t.proxy.setArmed(true)
   end)
 
-  local yaw, pitch, dist, distXZ = computeAim(ent)
-  if dist < 0.6 or dist > SCAN_RANGE + 10 then
+  local yaw, pitch, dist = computeAim(ent)
+  if dist < 1.5 or dist > SCAN_RANGE + 8 then
     debugMsg = string.format("дист:%.1f", dist)
     return false
   end
 
+  -- наведение
   pcall(function() t.proxy.moveTo(yaw, pitch) end)
-  os.sleep(0.12)
+
+  -- ждём поворота
+  local wait = 0
+  while wait < 0.5 do
+    local onTarget = false
+    pcall(function() onTarget = t.proxy.isOnTarget() end)
+    if onTarget then break end
+    os.sleep(0.05)
+    wait = wait + 0.05
+  end
 
   local now = computer.uptime()
-  debugMsg = string.format("y:%.0f p:%.0f d:%.1f xz:%.1f fine:%d",
-    yaw, pitch, dist, distXZ, yawFine)
+  debugMsg = string.format("y:%.0f p:%.0f d:%.1f", yaw, pitch, dist)
 
   if (now - (lastFire[t.addr] or 0)) < FIRE_COOLDOWN then return false end
 
@@ -298,25 +282,13 @@ local function aimAndFire(t, ent)
   pcall(function() fired = t.proxy.fire() end)
   lastFire[t.addr] = now
   debugMsg = debugMsg .. " выстр:" .. tostring(fired)
-
-  if pitch <= -30 and distXZ < 10 then
-    barrelHeight = math.max(0.5, barrelHeight - 0.1)
-    saveConfig()
-  elseif pitch > 25 and distXZ < 10 then
-    barrelHeight = math.min(8, barrelHeight + 0.1)
-    saveConfig()
-  end
-
   return fired
 end
 
 local function doCombat()
-  if not DETECTOR_POS then
-    autoCalibrateDetector(false)
-    if not DETECTOR_POS then
-      lastTarget = "встань к детектору"
-      return
-    end
+  if not TURRET_POS then
+    lastTarget = "нужна калибровка турели"
+    return
   end
 
   local anyOn = false
@@ -336,11 +308,9 @@ local function doCombat()
       if shouldAttack(ent) and tostring(ent.name) == lockedTarget.name then
         local ddx = (ent.x or 0) - (lockedTarget.x or 0)
         local ddz = (ent.z or 0) - (lockedTarget.z or 0)
-        if ddx*ddx + ddz*ddz < 64 then
+        if ddx*ddx + ddz*ddz < 100 then
           target = ent
-          lockedTarget.x = ent.x
-          lockedTarget.y = ent.y
-          lockedTarget.z = ent.z
+          lockedTarget.x, lockedTarget.y, lockedTarget.z = ent.x, ent.y, ent.z
           break
         end
       end
@@ -351,7 +321,10 @@ local function doCombat()
     table.sort(ents, function(a,b)
       local ap, bp = isPlayer(a), isPlayer(b)
       if ap ~= bp then return not ap end
-      return (a.range or 999) < (b.range or 999)
+      -- ближайший к ТУРЕЛИ
+      local da = ((a.x or 0)-TURRET_POS.x)^2 + ((a.z or 0)-TURRET_POS.z)^2
+      local db = ((b.x or 0)-TURRET_POS.x)^2 + ((b.z or 0)-TURRET_POS.z)^2
+      return da < db
     end)
     for _, ent in ipairs(ents) do
       if shouldAttack(ent) then
@@ -383,7 +356,11 @@ local function drawCard(idx, t, x, y, w, h)
   txt(x+2, y+2, t.addr:sub(1,14), C.gray, C.panel)
   txt(x+4, y+4, "  ███  ", C.purple, C.panel)
   txt(x+4, y+5, " █████ ", C.purple, C.panel)
-  txt(x+2, y+7, string.format("h=%.1f  поворот:%d%+d", barrelHeight, yawOffset, yawFine), C.cyan, C.panel)
+  if TURRET_POS then
+    txt(x+2, y+7, string.format("Ствол: %.0f,%.0f,%.0f", TURRET_POS.x, TURRET_POS.y, TURRET_POS.z), C.cyan, C.panel)
+  else
+    txt(x+2, y+7, "Нет калибровки!", C.red, C.panel)
+  end
 
   local barW = w - 4
   fill(x+2, y+8, barW, 1, C.energyBg)
@@ -399,15 +376,15 @@ local function drawBottom()
   local y = screenH - 2
   fill(1, y, screenW, 2, C.panel)
   local items = {
-    {id="all_on",  label="Турели ВКЛ",  active=true, col=C.yellow},
-    {id="all_off", label="Турели ВЫКЛ", active=true, col=C.gray},
-    {id="calib",   label="Калибровка",  active=true, col=C.green},
-    {id="left",    label="◀ Левее",     active=true, col=C.cyan},
-    {id="right",   label="Правее ▶",    active=true, col=C.cyan},
-    {id="flipP",   label="Инверт наклон", active=true, col=C.cyan},
-    {id="mobs",    label="Мобы",        active=attackMobs, col=C.yellow},
-    {id="players", label="Игроки",      active=attackPlayers, col=C.yellow},
-    {id="exit",    label="Выход",       active=true, col=C.red},
+    {id="all_on",  label="Турели ВКЛ",     active=true, col=C.yellow},
+    {id="all_off", label="Турели ВЫКЛ",    active=true, col=C.gray},
+    {id="calib",   label="Калибровка турели", active=true, col=C.green},
+    {id="left",    label="◀",              active=true, col=C.cyan},
+    {id="right",   label="▶",              active=true, col=C.cyan},
+    {id="flipP",   label="Наклон",         active=true, col=C.cyan},
+    {id="mobs",    label="Мобы",           active=attackMobs, col=C.yellow},
+    {id="players", label="Игроки",         active=attackPlayers, col=C.yellow},
+    {id="exit",    label="Выход",          active=true, col=C.red},
   }
   local bx = 2
   for _, it in ipairs(items) do
@@ -417,21 +394,19 @@ local function drawBottom()
     buttons[it.id] = {x=bx,y=y,w=bw,h=2, action=function()
       if it.id=="all_on" then powerAll(true)
       elseif it.id=="all_off" then powerAll(false)
-      elseif it.id=="calib" then
-        DETECTOR_POS = nil
-        autoCalibrateDetector(true)
+      elseif it.id=="calib" then calibrateTurret()
       elseif it.id=="left" then
-        yawFine = math.max(-30, yawFine - 3)
+        yawAdd = yawAdd - 5
         saveConfig()
-        statusMsg = "Подстройка влево: "..yawFine.."°"
+        statusMsg = "Поворот: "..yawAdd.."°"
       elseif it.id=="right" then
-        yawFine = math.min(30, yawFine + 3)
+        yawAdd = yawAdd + 5
         saveConfig()
-        statusMsg = "Подстройка вправо: "..yawFine.."°"
+        statusMsg = "Поворот: "..yawAdd.."°"
       elseif it.id=="flipP" then
         pitchSign = -pitchSign
         saveConfig()
-        statusMsg = "Наклон: " .. pitchSign
+        statusMsg = "Наклон: "..pitchSign
       elseif it.id=="mobs" then attackMobs = not attackMobs; saveConfig()
       elseif it.id=="players" then attackPlayers = not attackPlayers; saveConfig()
       elseif it.id=="exit" then running = false
@@ -446,11 +421,11 @@ local function drawUI()
   fill(1,1,screenW,screenH, C.bg)
   center(1, "═══ ECS® Security Systems ═══", C.title, C.bg)
 
-  if DETECTOR_POS then
-    txt(2, 2, string.format("Турелей: %d | Детектор: %d, %d, %d | h=%.1f",
-      #turrets, DETECTOR_POS.x, DETECTOR_POS.y, DETECTOR_POS.z, barrelHeight), C.text, C.bg)
+  if TURRET_POS then
+    txt(2, 2, string.format("Турелей: %d | Ствол: %.1f, %.1f, %.1f",
+      #turrets, TURRET_POS.x, TURRET_POS.y, TURRET_POS.z), C.text, C.bg)
   else
-    txt(2, 2, "Турелей: "..#turrets.." | КАЛИБРОВКА: встань рядом с детектором", C.orange, C.bg)
+    txt(2, 2, "Встань ПОД турель и нажми [Калибровка турели]", C.orange, C.bg)
   end
 
   local cols = math.min(4, math.max(1, #turrets))
@@ -485,13 +460,10 @@ local function main()
     return
   end
 
-  autoCalibrateDetector(false)
-
   while running do
     local now = computer.uptime()
     if now - lastDraw >= UPDATE_GUI then
       refreshTurrets()
-      if not DETECTOR_POS then autoCalibrateDetector(false) end
       drawUI()
       lastDraw = now
     end
