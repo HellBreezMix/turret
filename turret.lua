@@ -1,6 +1,6 @@
 -- ============================================================
---  ECS® Security Systems — Multi-Turret Control v6.2
---  Весь интерфейс на русском
+--  ECS® Security Systems — Multi-Turret Control v6.3
+--  Фикс прицела вблизи (под турелью)
 -- ============================================================
 
 local component = require("component")
@@ -21,6 +21,8 @@ local CONFIG_PATH   = "/home/turret_cfg.lua"
 local barrelHeight = 2.0
 local pitchSign = 1
 local yawOffset = 180
+local yawFine = 0          -- тонкая подстройка в градусах (−15…+15)
+local lastGoodYaw = 0
 
 local C = {
   bg=0x0A0A14, panel=0x141420, border=0x3A3A60, text=0xD8D8F0,
@@ -50,6 +52,7 @@ local function saveConfig()
     barrelHeight = barrelHeight,
     pitchSign = pitchSign,
     yawOffset = yawOffset,
+    yawFine = yawFine,
   }
   local f = io.open(CONFIG_PATH, "w")
   if f then f:write(serialization.serialize(data)) f:close() end
@@ -69,6 +72,7 @@ local function loadConfig()
   barrelHeight = data.barrelHeight or barrelHeight
   pitchSign = data.pitchSign or pitchSign
   yawOffset = data.yawOffset or yawOffset
+  yawFine = data.yawFine or yawFine
 end
 
 -- ===================== GUI =====================
@@ -230,7 +234,7 @@ end
 -- ===================== НАВЕДЕНИЕ =====================
 local function computeAim(ent)
   local tx = ent.x or 0
-  local ty = (ent.y or 0) + 1.1
+  local ty = (ent.y or 0) + 1.0   -- центр тела
   local tz = ent.z or 0
 
   local bx = DETECTOR_POS.x
@@ -244,14 +248,22 @@ local function computeAim(ent)
   local distXZ = math.sqrt(dx*dx + dz*dz)
   local dist   = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-  local yaw = math.deg(math.atan2(dx, dz)) + yawOffset
-  yaw = yaw % 360
-  if yaw < 0 then yaw = yaw + 360 end
+  local yaw
+  if distXZ < 1.2 then
+    -- почти под стволом — горизонтальный угол ненадёжен, оставляем прошлый
+    yaw = lastGoodYaw
+  else
+    yaw = math.deg(math.atan2(dx, dz)) + yawOffset + yawFine
+    yaw = yaw % 360
+    if yaw < 0 then yaw = yaw + 360 end
+    lastGoodYaw = yaw
+  end
 
-  local pitch = math.deg(math.atan2(dy, math.max(distXZ, 0.05))) * pitchSign
+  local pitch = math.deg(math.atan2(dy, math.max(distXZ, 0.15))) * pitchSign
 
-  if distXZ < 6 and pitch < -20 then
-    pitch = math.max(pitch, -18)
+  -- вблизи не уводим в пол слишком резко
+  if distXZ < 4 then
+    pitch = math.max(pitch, -35)
   end
   pitch = math.max(-45, math.min(90, pitch))
 
@@ -268,7 +280,7 @@ local function aimAndFire(t, ent)
   end)
 
   local yaw, pitch, dist, distXZ = computeAim(ent)
-  if dist < 1.0 or dist > SCAN_RANGE + 10 then
+  if dist < 0.6 or dist > SCAN_RANGE + 10 then
     debugMsg = string.format("дист:%.1f", dist)
     return false
   end
@@ -277,8 +289,8 @@ local function aimAndFire(t, ent)
   os.sleep(0.12)
 
   local now = computer.uptime()
-  debugMsg = string.format("y:%.0f p:%.0f d:%.1f yaw+%d ps:%d",
-    yaw, pitch, dist, yawOffset, pitchSign)
+  debugMsg = string.format("y:%.0f p:%.0f d:%.1f xz:%.1f fine:%d",
+    yaw, pitch, dist, distXZ, yawFine)
 
   if (now - (lastFire[t.addr] or 0)) < FIRE_COOLDOWN then return false end
 
@@ -288,10 +300,10 @@ local function aimAndFire(t, ent)
   debugMsg = debugMsg .. " выстр:" .. tostring(fired)
 
   if pitch <= -30 and distXZ < 10 then
-    barrelHeight = math.max(0.5, barrelHeight - 0.15)
+    barrelHeight = math.max(0.5, barrelHeight - 0.1)
     saveConfig()
   elseif pitch > 25 and distXZ < 10 then
-    barrelHeight = math.min(8, barrelHeight + 0.15)
+    barrelHeight = math.min(8, barrelHeight + 0.1)
     saveConfig()
   end
 
@@ -371,7 +383,7 @@ local function drawCard(idx, t, x, y, w, h)
   txt(x+2, y+2, t.addr:sub(1,14), C.gray, C.panel)
   txt(x+4, y+4, "  ███  ", C.purple, C.panel)
   txt(x+4, y+5, " █████ ", C.purple, C.panel)
-  txt(x+2, y+7, string.format("h=%.1f  пов:%d  накл:%d", barrelHeight, yawOffset, pitchSign), C.cyan, C.panel)
+  txt(x+2, y+7, string.format("h=%.1f  поворот:%d%+d", barrelHeight, yawOffset, yawFine), C.cyan, C.panel)
 
   local barW = w - 4
   fill(x+2, y+8, barW, 1, C.energyBg)
@@ -387,14 +399,15 @@ local function drawBottom()
   local y = screenH - 2
   fill(1, y, screenW, 2, C.panel)
   local items = {
-    {id="all_on",  label="Турели ВКЛ",    active=true, col=C.yellow},
-    {id="all_off", label="Турели ВЫКЛ",   active=true, col=C.gray},
-    {id="calib",   label="Калибровка",    active=true, col=C.green},
-    {id="flipY",   label="Инверт повор.", active=true, col=C.cyan},
+    {id="all_on",  label="Турели ВКЛ",  active=true, col=C.yellow},
+    {id="all_off", label="Турели ВЫКЛ", active=true, col=C.gray},
+    {id="calib",   label="Калибровка",  active=true, col=C.green},
+    {id="left",    label="◀ Левее",     active=true, col=C.cyan},
+    {id="right",   label="Правее ▶",    active=true, col=C.cyan},
     {id="flipP",   label="Инверт наклон", active=true, col=C.cyan},
-    {id="mobs",    label="Мобы",          active=attackMobs, col=C.yellow},
-    {id="players", label="Игроки",        active=attackPlayers, col=C.yellow},
-    {id="exit",    label="Выход",         active=true, col=C.red},
+    {id="mobs",    label="Мобы",        active=attackMobs, col=C.yellow},
+    {id="players", label="Игроки",      active=attackPlayers, col=C.yellow},
+    {id="exit",    label="Выход",       active=true, col=C.red},
   }
   local bx = 2
   for _, it in ipairs(items) do
@@ -407,14 +420,18 @@ local function drawBottom()
       elseif it.id=="calib" then
         DETECTOR_POS = nil
         autoCalibrateDetector(true)
-      elseif it.id=="flipY" then
-        yawOffset = (yawOffset + 180) % 360
+      elseif it.id=="left" then
+        yawFine = math.max(-30, yawFine - 3)
         saveConfig()
-        statusMsg = "Смещение поворота: " .. yawOffset
+        statusMsg = "Подстройка влево: "..yawFine.."°"
+      elseif it.id=="right" then
+        yawFine = math.min(30, yawFine + 3)
+        saveConfig()
+        statusMsg = "Подстройка вправо: "..yawFine.."°"
       elseif it.id=="flipP" then
         pitchSign = -pitchSign
         saveConfig()
-        statusMsg = "Знак наклона: " .. pitchSign
+        statusMsg = "Наклон: " .. pitchSign
       elseif it.id=="mobs" then attackMobs = not attackMobs; saveConfig()
       elseif it.id=="players" then attackPlayers = not attackPlayers; saveConfig()
       elseif it.id=="exit" then running = false
