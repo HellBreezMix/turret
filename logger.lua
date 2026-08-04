@@ -3,173 +3,376 @@
 -- logger.lua
 ----------------------------------------------------------
 
+
+----------------------------------------------------------
+-- Module path
+----------------------------------------------------------
+
+package.path =
+    "/home/TurretOS/?.lua;"
+    ..
+    package.path
+
+
+
+----------------------------------------------------------
+-- Modules
+----------------------------------------------------------
+
 local config = require("config")
+
+local filesystem = require("filesystem")
+
+
 
 local logger = {}
 
+
+
 ----------------------------------------------------------
--- Статистика
+-- Statistics
 ----------------------------------------------------------
 
 local stats = {
+
     shots = 0,
+
     kills = 0,
+
     players = 0,
+
     mobs = 0,
+
     detected = 0,
+
     startTime = computer.uptime()
+
 }
 
+
+
 ----------------------------------------------------------
--- Создание файла
+-- Create file
 ----------------------------------------------------------
 
 local function touch(path)
-    local fs = require("filesystem")
 
-    if not fs.exists(path) then
-        local file = io.open(path, "w")
+
+    if not filesystem.exists(path) then
+
+
+        local file =
+            io.open(
+                path,
+                "w"
+            )
+
+
+
         if file then
+
             file:close()
+
         end
+
+
     end
+
+
 end
 
+
+
 ----------------------------------------------------------
--- Инициализация
+-- Initialize
 ----------------------------------------------------------
 
 function logger.init()
 
-    touch(config.logs.history)
-    touch(config.logs.kills)
-    touch(config.logs.errors)
 
-    logger.history("TurretOS запущена")
+    touch(
+        config.logs.history
+    )
+
+
+    touch(
+        config.logs.kills
+    )
+
+
+    touch(
+        config.logs.errors
+    )
+
+
+
+    logger.history(
+        "TurretOS запущена"
+    )
+
 
 end
 
+
+
 ----------------------------------------------------------
--- Время
+-- Time
 ----------------------------------------------------------
 
 local function timestamp()
 
-    local t = os.date("*t")
+
+    local t =
+        os.date("*t")
+
+
 
     return string.format(
+
         "%02d:%02d:%02d",
+
         t.hour,
+
         t.min,
+
         t.sec
+
     )
+
 
 end
 
+
+
 ----------------------------------------------------------
--- Запись строки
+-- Write
 ----------------------------------------------------------
 
-local function write(path, text)
+local function write(path,text)
 
-    local file = io.open(path, "a")
+
+    local file =
+        io.open(
+            path,
+            "a"
+        )
+
+
 
     if not file then
+
         return
+
     end
 
-    file:write(text .. "\n")
+
+
+    file:write(
+        text
+        ..
+        "\n"
+    )
+
+
 
     file:close()
 
+
 end
 
+
+
 ----------------------------------------------------------
--- История
+-- History
 ----------------------------------------------------------
 
 function logger.history(text)
 
+
+    if not config.logs.enabled then
+
+        return
+
+    end
+
+
+
     local line =
-        "[" ..
-        timestamp() ..
-        "] " ..
+
+        "["
+
+        ..
+
+        timestamp()
+
+        ..
+
+        "] "
+
+        ..
+
         text
 
-    write(config.logs.history, line)
+
+
+
+    write(
+
+        config.logs.history,
+
+        line
+
+    )
+
+
 
     if config.debug then
+
         print(line)
+
     end
+
 
 end
 
+
+
 ----------------------------------------------------------
--- Ошибки
+-- Error
 ----------------------------------------------------------
 
 function logger.error(text)
 
+
     local line =
-        "[" ..
-        timestamp() ..
-        "] ERROR: " ..
+
+        "["
+
+        ..
+
+        timestamp()
+
+        ..
+
+        "] ERROR: "
+
+        ..
+
         text
 
-    write(config.logs.errors, line)
 
-    io.stderr:write(line .. "\n")
+
+
+    write(
+
+        config.logs.errors,
+
+        line
+
+    )
+
+
+
+    if config.debug then
+
+        print(line)
+
+    end
+
 
 end
 
+
+
 ----------------------------------------------------------
--- Уничтожение цели
+-- Kill log
 ----------------------------------------------------------
 
 function logger.kill(target)
 
+
     local line =
-        "[" ..
-        timestamp() ..
-        "] " ..
+
+        "["
+
+        ..
+
+        timestamp()
+
+        ..
+
+        "] "
+
+        ..
+
         target
 
-    write(config.logs.kills, line)
 
-    stats.kills = stats.kills + 1
+
+
+    write(
+
+        config.logs.kills,
+
+        line
+
+    )
+
+
+
+    stats.kills =
+        stats.kills + 1
+
 
 end
 
+
+
 ----------------------------------------------------------
--- Статистика
+-- Counters
 ----------------------------------------------------------
 
 function logger.addShot()
 
-    stats.shots = stats.shots + 1
+    stats.shots =
+        stats.shots + 1
 
 end
+
+
+
 
 function logger.addPlayer()
 
-    stats.players = stats.players + 1
+    stats.players =
+        stats.players + 1
 
 end
+
+
+
 
 function logger.addMob()
 
-    stats.mobs = stats.mobs + 1
+    stats.mobs =
+        stats.mobs + 1
 
 end
+
+
+
 
 function logger.addDetection()
 
-    stats.detected = stats.detected + 1
+    stats.detected =
+        stats.detected + 1
 
 end
 
+
+
 ----------------------------------------------------------
--- Получение статистики
+-- Get stats
 ----------------------------------------------------------
 
 function logger.getStats()
@@ -178,49 +381,164 @@ function logger.getStats()
 
 end
 
+
+
 ----------------------------------------------------------
--- Сохранение статистики
+-- Save
 ----------------------------------------------------------
 
 function logger.save()
 
-    local file = io.open(config.stats.file, "w")
+
+    local file =
+        io.open(
+            config.stats.file,
+            "w"
+        )
+
+
 
     if not file then
-        return
+
+        return false
+
     end
 
-    file:write(stats.shots .. "\n")
-    file:write(stats.kills .. "\n")
-    file:write(stats.players .. "\n")
-    file:write(stats.mobs .. "\n")
-    file:write(stats.detected .. "\n")
+
+
+    file:write(
+        stats.shots
+        ..
+        "\n"
+    )
+
+
+    file:write(
+        stats.kills
+        ..
+        "\n"
+    )
+
+
+    file:write(
+        stats.players
+        ..
+        "\n"
+    )
+
+
+    file:write(
+        stats.mobs
+        ..
+        "\n"
+    )
+
+
+    file:write(
+        stats.detected
+        ..
+        "\n"
+    )
+
+
 
     file:close()
 
+
+
+    return true
+
 end
 
+
+
 ----------------------------------------------------------
--- Загрузка статистики
+-- Load
 ----------------------------------------------------------
 
 function logger.load()
 
-    local file = io.open(config.stats.file, "r")
+
+    local file =
+        io.open(
+            config.stats.file,
+            "r"
+        )
+
+
 
     if not file then
-        return
+
+        return false
+
     end
 
-    stats.shots = tonumber(file:read()) or 0
-    stats.kills = tonumber(file:read()) or 0
-    stats.players = tonumber(file:read()) or 0
-    stats.mobs = tonumber(file:read()) or 0
-    stats.detected = tonumber(file:read()) or 0
+
+
+
+    stats.shots =
+
+        tonumber(
+            file:read()
+        )
+        or
+        0
+
+
+
+    stats.kills =
+
+        tonumber(
+            file:read()
+        )
+        or
+        0
+
+
+
+
+    stats.players =
+
+        tonumber(
+            file:read()
+        )
+        or
+        0
+
+
+
+
+    stats.mobs =
+
+        tonumber(
+            file:read()
+        )
+        or
+        0
+
+
+
+
+    stats.detected =
+
+        tonumber(
+            file:read()
+        )
+        or
+        0
+
+
+
 
     file:close()
 
+
+
+    return true
+
 end
+
+
 
 ----------------------------------------------------------
 
