@@ -18,7 +18,6 @@ local COMBAT_EVERY  = 0.25
 local LOCK_TIME     = 2.5
 local CONFIG_PATH   = "/home/turret_cfg.lua"
 
--- Авто: высота ствола над детектором (подстраивается сама)
 local barrelHeight = 2.0
 
 local C = {
@@ -38,8 +37,7 @@ local screenW, screenH = 80, 25
 local buttons = {}
 local DETECTOR_POS = nil
 local lockedTarget = nil
-local pitchSign = 1          -- 1 или -1, авто
-local autoTries = 0
+local pitchSign = 1
 
 -- ===================== CONFIG =====================
 local function saveConfig()
@@ -83,20 +81,24 @@ local function fill(x,y,w,h,bg,fg,ch)
   if fg then gpu.setForeground(fg) end
   gpu.fill(x,y,w,h, ch or " ")
 end
+
 local function txt(x,y,str,fg,bg)
   if bg then gpu.setBackground(bg) end
   if fg then gpu.setForeground(fg) end
   gpu.set(x,y, tostring(str))
 end
+
 local function center(y,str,fg,bg)
   txt(math.floor((screenW-#str)/2)+1, y, str, fg, bg)
 end
+
 local function box(x,y,w,h,border,bg)
   fill(x,y,w,h, bg or C.panel)
   gpu.setBackground(border or C.border)
   gpu.fill(x,y,w,1," "); gpu.fill(x,y+h-1,w,1," ")
   gpu.fill(x,y,1,h," "); gpu.fill(x+w-1,y,1,h," ")
 end
+
 local function btn(x,y,w,h,label,active,color)
   local bg = active and (color or C.yellow) or C.gray
   local fg = active and C.dark or C.text
@@ -105,8 +107,7 @@ local function btn(x,y,w,h,label,active,color)
   return {x=x,y=y,w=w,h=h}
 end
 
--- ===================== АВТОКАЛИБРОВКА ДЕТЕКТОРА =====================
--- Берёт ближайшего игрока в радиусе 4 блоков
+-- ===================== АВТОКАЛИБРОВКА =====================
 local function autoCalibrateDetector(force)
   if DETECTOR_POS and not force then return true end
   if not detector then return false end
@@ -121,11 +122,10 @@ local function autoCalibrateDetector(force)
   table.sort(players, function(a,b) return (a.range or 99) < (b.range or 99) end)
   local p = players[1]
   if (p.range or 99) > 3.5 then
-    statusMsg = "Подойди ближе к детектору (сейчас "..string.format("%.1f", p.range)..")"
+    statusMsg = "Подойди ближе к детектору ("..string.format("%.1f", p.range)..")"
     return false
   end
 
-  -- позиция игрока ≈ детектор (ноги на блоке / рядом)
   DETECTOR_POS = {
     x = math.floor((p.x or 0) + 0.5),
     y = math.floor((p.y or 0) + 0.5),
@@ -151,8 +151,8 @@ local function refreshTurrets()
       local powered = false
       pcall(function() powered = p.isPowered() end)
       table.insert(newList, {
-        addr=addr, proxy=p, powered=powered,
-        name="T-"..addr:sub(1,6),
+        addr = addr, proxy = p, powered = powered,
+        name = "T-" .. addr:sub(1,6),
       })
       lastFire[addr] = 0
     end
@@ -224,15 +224,12 @@ local function getEntities()
   return list
 end
 
--- ===================== УМНОЕ НАВЕДЕНИЕ =====================
--- Турель ≈ детектор + высота ствола. Цель = грудь моба.
+-- ===================== НАВЕДЕНИЕ =====================
 local function computeAim(ent)
-  -- точка цели: центр тела
   local tx = ent.x or 0
   local ty = (ent.y or 0) + 1.1
   local tz = ent.z or 0
 
-  -- точка ствола
   local bx = DETECTOR_POS.x
   local by = DETECTOR_POS.y + barrelHeight
   local bz = DETECTOR_POS.z
@@ -249,7 +246,6 @@ local function computeAim(ent)
 
   local pitch = math.deg(math.atan2(dy, math.max(distXZ, 0.05))) * pitchSign
 
-  -- не даём уходить в пол на близкой дистанции
   if distXZ < 6 and pitch < -20 then
     pitch = math.max(pitch, -18)
   end
@@ -267,7 +263,7 @@ local function aimAndFire(t, ent)
     t.proxy.setArmed(true)
   end)
 
-  local yaw, pitch, dist, distXZ, dy = computeAim(ent)
+  local yaw, pitch, dist, distXZ = computeAim(ent)
   if dist < 1.0 or dist > SCAN_RANGE + 10 then
     debugMsg = string.format("dist:%.1f", dist)
     return false
@@ -275,10 +271,6 @@ local function aimAndFire(t, ent)
 
   pcall(function() t.proxy.moveTo(yaw, pitch) end)
   os.sleep(0.12)
-
-  local ready, shaft = false, -1
-  pcall(function() ready = t.proxy.isReady() end)
-  pcall(function() shaft = t.proxy.getShaftLength() end)
 
   local now = computer.uptime()
   debugMsg = string.format("y:%.0f p:%.0f d:%.1f bh:%.1f ps:%d",
@@ -291,8 +283,6 @@ local function aimAndFire(t, ent)
   lastFire[t.addr] = now
   debugMsg = debugMsg .. " fire:" .. tostring(fired)
 
-  -- лёгкая авто-подстройка высоты ствола по углу
-  -- если очень часто смотрим круто вниз — ствол, видимо, выше
   if pitch <= -30 and distXZ < 10 then
     barrelHeight = math.max(0.5, barrelHeight - 0.15)
     saveConfig()
@@ -305,7 +295,6 @@ local function aimAndFire(t, ent)
 end
 
 local function doCombat()
-  -- автокалибровка если нужно
   if not DETECTOR_POS then
     autoCalibrateDetector(false)
     if not DETECTOR_POS then
@@ -326,15 +315,16 @@ local function doCombat()
   local now = computer.uptime()
   local target = nil
 
-  -- удержание цели
-  if lockedTarget and now < (lockedTarget.until or 0) then
+  if lockedTarget and now < (lockedTarget.lockUntil or 0) then
     for _, ent in ipairs(ents) do
       if shouldAttack(ent) and tostring(ent.name) == lockedTarget.name then
         local ddx = (ent.x or 0) - (lockedTarget.x or 0)
         local ddz = (ent.z or 0) - (lockedTarget.z or 0)
         if ddx*ddx + ddz*ddz < 64 then
           target = ent
-          lockedTarget.x, lockedTarget.y, lockedTarget.z = ent.x, ent.y, ent.z
+          lockedTarget.x = ent.x
+          lockedTarget.y = ent.y
+          lockedTarget.z = ent.z
           break
         end
       end
@@ -353,7 +343,7 @@ local function doCombat()
         lockedTarget = {
           name = tostring(ent.name),
           x = ent.x, y = ent.y, z = ent.z,
-          until = now + LOCK_TIME,
+          lockUntil = now + LOCK_TIME,
         }
         break
       end
@@ -469,7 +459,6 @@ local function main()
     return
   end
 
-  -- сразу пробуем автокалибровку
   autoCalibrateDetector(false)
 
   while running do
