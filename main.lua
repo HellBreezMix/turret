@@ -5,6 +5,20 @@
 -- Main control system
 ----------------------------------------------------------
 
+----------------------------------------------------------
+-- Module path
+----------------------------------------------------------
+
+package.path =
+    "/home/TurretOS/?.lua;"
+    ..
+    package.path
+
+
+----------------------------------------------------------
+-- Modules
+----------------------------------------------------------
+
 local config = require("config")
 local api = require("api")
 local logger = require("logger")
@@ -20,6 +34,9 @@ local currentTarget = nil
 
 local lastShot = 0
 
+local lastSave =
+    computer.uptime()
+
 
 ----------------------------------------------------------
 -- Initialization
@@ -28,9 +45,9 @@ local lastShot = 0
 local function initialize()
 
     print("")
-    print("==============================")
-    print("        TurretOS v1.0")
-    print("==============================")
+    print("========================================")
+    print("          TurretOS v" .. config.version)
+    print("========================================")
     print("")
 
 
@@ -51,20 +68,24 @@ local function initialize()
     if not ok then
 
         logger.error(
-            err
+            tostring(err)
         )
+
 
         print(
             "Ошибка запуска:"
         )
 
+
         print(
-            err
+            tostring(err)
         )
+
 
         return false
 
     end
+
 
 
     logger.history(
@@ -89,17 +110,25 @@ local function validateTarget(target)
     end
 
 
+
     if target.name then
 
         if api.isWhitelisted(
             target.name
         ) then
 
+            logger.history(
+                "Игрок в белом списке: "
+                ..
+                target.name
+            )
+
             return false
 
         end
 
     end
+
 
 
     return true
@@ -116,6 +145,7 @@ local function selectTarget()
 
     local target =
         api.getBestTarget()
+
 
 
     if not target then
@@ -136,23 +166,31 @@ local function selectTarget()
             logger.history(
                 "Новая цель: "
                 ..
-                (target.name or "unknown")
+                (
+                    target.name
+                    or
+                    "unknown"
+                )
             )
-
 
         end
 
 
         currentTarget = target
 
+
     end
+
 
 
     return currentTarget
 
 end
+
+
+
 ----------------------------------------------------------
--- Aiming and firing
+-- Aiming
 ----------------------------------------------------------
 
 local function aimAtTarget(target)
@@ -162,8 +200,10 @@ local function aimAtTarget(target)
     end
 
 
+
     local ok, err =
         api.moveToTarget(target)
+
 
 
     if not ok then
@@ -174,9 +214,11 @@ local function aimAtTarget(target)
             tostring(err)
         )
 
+
         return false
 
     end
+
 
 
     return true
@@ -195,6 +237,7 @@ local function canFire()
         computer.uptime()
 
 
+
     if now - lastShot <
         config.fireDelay then
 
@@ -203,9 +246,11 @@ local function canFire()
     end
 
 
+
     return true
 
 end
+
 
 
 
@@ -216,11 +261,8 @@ local function fireAtTarget(target)
     end
 
 
-    if not api.isReady() then
 
-        logger.history(
-            "Турель не готова"
-        )
+    if not api.isReady() then
 
         return false
 
@@ -229,13 +271,16 @@ local function fireAtTarget(target)
 
 
     if not canFire() then
+
         return false
+
     end
 
 
 
     local ok, err =
         api.fire()
+
 
 
     if not ok then
@@ -245,6 +290,7 @@ local function fireAtTarget(target)
             ..
             tostring(err)
         )
+
 
         return false
 
@@ -256,14 +302,21 @@ local function fireAtTarget(target)
         computer.uptime()
 
 
+
     logger.addShot()
+
 
 
     logger.history(
         "Выстрел по: "
         ..
-        (target.name or "unknown")
+        (
+            target.name
+            or
+            "unknown"
+        )
     )
+
 
 
     return true
@@ -273,15 +326,13 @@ end
 
 
 ----------------------------------------------------------
--- Target processing
+-- Process target
 ----------------------------------------------------------
 
 local function processTarget(target)
 
     if not target then
-
         return
-
     end
 
 
@@ -290,32 +341,25 @@ local function processTarget(target)
 
 
 
-    local aimed =
-        aimAtTarget(target)
+    if aimAtTarget(target) then
 
 
-    if not aimed then
+        os.sleep(
+            config.fireDelay
+        )
 
-        return
+
+        fireAtTarget(target)
+
 
     end
-
-
-
-    os.sleep(
-        config.fireDelay
-    )
-
-
-
-    fireAtTarget(target)
 
 end
 
 
 
 ----------------------------------------------------------
--- Target lost check
+-- Check lost target
 ----------------------------------------------------------
 
 local function checkTarget()
@@ -325,18 +369,23 @@ local function checkTarget()
     end
 
 
+
     local targets =
         api.getTargets()
 
 
+
     for _, target in pairs(targets) do
+
 
         if target.name ==
             currentTarget.name then
 
+
             return
 
         end
+
 
     end
 
@@ -354,16 +403,19 @@ end
 
 
 ----------------------------------------------------------
--- Main cycle
+-- Update
 ----------------------------------------------------------
 
 local function update()
 
+
     checkTarget()
+
 
 
     local target =
         selectTarget()
+
 
 
     if target then
@@ -372,7 +424,11 @@ local function update()
 
     end
 
+
 end
+
+
+
 ----------------------------------------------------------
 -- Interface
 ----------------------------------------------------------
@@ -380,16 +436,10 @@ end
 local function clearScreen()
 
     term.clear()
-    term.setCursor(1,1)
 
-end
-
-
-
-local function printLine(text)
-
-    print(
-        tostring(text)
+    term.setCursor(
+        1,
+        1
     )
 
 end
@@ -398,28 +448,29 @@ end
 
 local function drawInterface()
 
+
     if not config.showUI then
         return
     end
+
 
 
     clearScreen()
 
 
 
-    printLine(
-        "========================================"
-    )
+    print("========================================")
 
-    printLine(
-        "              TurretOS v"
+    print(
+        "          TurretOS v"
         ..
         config.version
     )
 
-    printLine(
-        "========================================"
-    )
+    print("========================================")
+
+    print("")
+
 
 
     local status =
@@ -427,88 +478,56 @@ local function drawInterface()
 
 
 
-    printLine("")
-
-
-    printLine(
-        "Статус:"
+    print(
+        "Питание: "
+        ..
+        tostring(status.powered)
     )
 
 
-    if status.powered then
 
-        printLine(
-            "  Питание: ВКЛ"
-        )
-
-    else
-
-        printLine(
-            "  Питание: ВЫКЛ"
-        )
-
-    end
+    print(
+        "Готовность: "
+        ..
+        tostring(status.ready)
+    )
 
 
 
-    if status.ready then
-
-        printLine(
-            "  Готовность: ГОТОВА"
-        )
-
-    else
-
-        printLine(
-            "  Готовность: НЕТ"
-        )
-
-    end
-
-
-
-    printLine(
-        "  Ствол: "
+    print(
+        "Ствол: "
         ..
         tostring(status.shaft)
     )
 
 
 
-    printLine("")
+    print("")
 
-    printLine(
-        "Текущая цель:"
+    print(
+        "Цель:"
     )
+
 
 
     if currentTarget then
 
-
-        printLine(
-            "  Имя: "
-            ..
-            (
-                currentTarget.name
-                or
-                "Неизвестно"
-            )
+        print(
+            currentTarget.name
+            or
+            "unknown"
         )
 
-
-        printLine(
-            "  Тип: "
+        print(
+            "Тип: "
             ..
-            (
+            tostring(
                 currentTarget.type
-                or
-                "?"
             )
         )
 
-
-        printLine(
-            "  Расстояние: "
+        print(
+            "Расстояние: "
             ..
             string.format(
                 "%.1f",
@@ -516,24 +535,21 @@ local function drawInterface()
                 or
                 0
             )
-            ..
-            " м"
         )
 
 
     else
 
-
-        printLine(
-            "  Нет цели"
+        print(
+            "Нет цели"
         )
-
 
     end
 
 
 
-    printLine("")
+    print("")
+
 
 
     local stats =
@@ -541,88 +557,39 @@ local function drawInterface()
 
 
 
-    printLine(
-        "Статистика:"
-    )
-
-
-    printLine(
-        "  Выстрелов: "
+    print(
+        "Выстрелов: "
         ..
         stats.shots
     )
 
 
-    printLine(
-        "  Уничтожено: "
-        ..
-        stats.kills
-    )
-
-
-    printLine(
-        "  Обнаружено: "
+    print(
+        "Обнаружено: "
         ..
         stats.detected
     )
 
 
 
-    printLine("")
-
-
-    local yaw, pitch =
-        api.getAngles()
-
-
-
-    printLine(
-        "Наведение:"
-    )
-
-
-    printLine(
-        "  YAW: "
-        ..
-        math.floor(yaw)
-        ..
-        "°"
-    )
-
-
-    printLine(
-        "  PITCH: "
-        ..
-        math.floor(pitch)
-        ..
-        "°"
-    )
-
-
-
-    printLine("")
-
-
-    printLine(
-        "========================================"
-    )
+    print("========================================")
 
 end
 
 
 
 ----------------------------------------------------------
--- Safe main update
+-- Safe update
 ----------------------------------------------------------
 
 local function safeUpdate()
 
+
     local ok, err =
-        pcall(function()
+        pcall(
+            update
+        )
 
-            update()
-
-        end)
 
 
     if not ok then
@@ -635,19 +602,19 @@ local function safeUpdate()
 
 
 end
+
+
+
 ----------------------------------------------------------
--- Runtime control
+-- Save check
 ----------------------------------------------------------
-
-local lastSave =
-    computer.uptime()
-
-
 
 local function saveCheck()
 
+
     local now =
         computer.uptime()
+
 
 
     if now - lastSave >=
@@ -657,13 +624,9 @@ local function saveCheck()
         logger.save()
 
 
+
         lastSave =
             now
-
-
-        logger.history(
-            "Статистика сохранена"
-        )
 
     end
 
@@ -677,25 +640,27 @@ end
 
 local function shutdown()
 
+
     logger.history(
-        "Завершение работы TurretOS"
+        "Остановка TurretOS"
     )
+
 
 
     logger.save()
 
 
-    api.arm(false)
 
+    api.arm(false)
 
     api.powerOff()
 
 
-    print("")
 
     print(
         "TurretOS остановлена"
     )
+
 
 end
 
@@ -706,6 +671,7 @@ end
 ----------------------------------------------------------
 
 local function run()
+
 
     while running do
 
@@ -719,12 +685,14 @@ local function run()
         saveCheck()
 
 
+
         os.sleep(
             config.loopDelay
         )
 
 
     end
+
 
 end
 
@@ -736,12 +704,8 @@ end
 
 local function main()
 
-    local ok =
-        initialize()
 
-
-
-    if not ok then
+    if not initialize() then
 
         return
 
@@ -771,12 +735,9 @@ local function main()
 
     shutdown()
 
+
 end
 
 
-
-----------------------------------------------------------
--- Launch
-----------------------------------------------------------
 
 main()
