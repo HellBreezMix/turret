@@ -1,6 +1,6 @@
 -- ============================================================
---  ECS® Security Systems — Multi-Turret Control v6 AUTO
---  Полная автокалибровка, без ручных offset'ов
+--  ECS® Security Systems — Multi-Turret Control v6.2
+--  Весь интерфейс на русском
 -- ============================================================
 
 local component = require("component")
@@ -19,6 +19,8 @@ local LOCK_TIME     = 2.5
 local CONFIG_PATH   = "/home/turret_cfg.lua"
 
 local barrelHeight = 2.0
+local pitchSign = 1
+local yawOffset = 180
 
 local C = {
   bg=0x0A0A14, panel=0x141420, border=0x3A3A60, text=0xD8D8F0,
@@ -37,7 +39,6 @@ local screenW, screenH = 80, 25
 local buttons = {}
 local DETECTOR_POS = nil
 local lockedTarget = nil
-local pitchSign = 1
 
 -- ===================== CONFIG =====================
 local function saveConfig()
@@ -48,6 +49,7 @@ local function saveConfig()
     attackPlayers = attackPlayers,
     barrelHeight = barrelHeight,
     pitchSign = pitchSign,
+    yawOffset = yawOffset,
   }
   local f = io.open(CONFIG_PATH, "w")
   if f then f:write(serialization.serialize(data)) f:close() end
@@ -66,9 +68,10 @@ local function loadConfig()
   if data.attackPlayers ~= nil then attackPlayers = data.attackPlayers end
   barrelHeight = data.barrelHeight or barrelHeight
   pitchSign = data.pitchSign or pitchSign
+  yawOffset = data.yawOffset or yawOffset
 end
 
--- ===================== GUI UTILS =====================
+-- ===================== GUI =====================
 local function setResolution()
   local maxW, maxH = gpu.maxResolution()
   screenW, screenH = maxW, maxH
@@ -115,7 +118,7 @@ local function autoCalibrateDetector(force)
   local players = {}
   pcall(function() players = detector.scanPlayers(4) or {} end)
   if #players == 0 then
-    statusMsg = "Автокалибровка: встань рядом с детектором"
+    statusMsg = "Калибровка: встань рядом с детектором"
     return false
   end
 
@@ -132,7 +135,7 @@ local function autoCalibrateDetector(force)
     z = math.floor((p.z or 0) + 0.5),
   }
   saveConfig()
-  statusMsg = string.format("Авто: детектор %d,%d,%d", DETECTOR_POS.x, DETECTOR_POS.y, DETECTOR_POS.z)
+  statusMsg = string.format("Детектор: %d, %d, %d", DETECTOR_POS.x, DETECTOR_POS.y, DETECTOR_POS.z)
   return true
 end
 
@@ -241,7 +244,8 @@ local function computeAim(ent)
   local distXZ = math.sqrt(dx*dx + dz*dz)
   local dist   = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-  local yaw = math.deg(math.atan2(dx, dz))
+  local yaw = math.deg(math.atan2(dx, dz)) + yawOffset
+  yaw = yaw % 360
   if yaw < 0 then yaw = yaw + 360 end
 
   local pitch = math.deg(math.atan2(dy, math.max(distXZ, 0.05))) * pitchSign
@@ -251,7 +255,7 @@ local function computeAim(ent)
   end
   pitch = math.max(-45, math.min(90, pitch))
 
-  return yaw, pitch, dist, distXZ, dy
+  return yaw, pitch, dist, distXZ
 end
 
 local function aimAndFire(t, ent)
@@ -265,7 +269,7 @@ local function aimAndFire(t, ent)
 
   local yaw, pitch, dist, distXZ = computeAim(ent)
   if dist < 1.0 or dist > SCAN_RANGE + 10 then
-    debugMsg = string.format("dist:%.1f", dist)
+    debugMsg = string.format("дист:%.1f", dist)
     return false
   end
 
@@ -273,15 +277,15 @@ local function aimAndFire(t, ent)
   os.sleep(0.12)
 
   local now = computer.uptime()
-  debugMsg = string.format("y:%.0f p:%.0f d:%.1f bh:%.1f ps:%d",
-    yaw, pitch, dist, barrelHeight, pitchSign)
+  debugMsg = string.format("y:%.0f p:%.0f d:%.1f yaw+%d ps:%d",
+    yaw, pitch, dist, yawOffset, pitchSign)
 
   if (now - (lastFire[t.addr] or 0)) < FIRE_COOLDOWN then return false end
 
   local fired = nil
   pcall(function() fired = t.proxy.fire() end)
   lastFire[t.addr] = now
-  debugMsg = debugMsg .. " fire:" .. tostring(fired)
+  debugMsg = debugMsg .. " выстр:" .. tostring(fired)
 
   if pitch <= -30 and distXZ < 10 then
     barrelHeight = math.max(0.5, barrelHeight - 0.15)
@@ -350,10 +354,10 @@ local function doCombat()
     end
   end
 
-  if not target then lastTarget = "whitelist" return end
+  if not target then lastTarget = "белый список" return end
 
   lastTarget = tostring(target.name)
-  statusMsg = string.format("Скан:%d | %s", #ents, lastTarget)
+  statusMsg = string.format("Скан: %d | %s", #ents, lastTarget)
 
   for _, t in ipairs(turrets) do
     if t.powered then aimAndFire(t, target) end
@@ -367,7 +371,7 @@ local function drawCard(idx, t, x, y, w, h)
   txt(x+2, y+2, t.addr:sub(1,14), C.gray, C.panel)
   txt(x+4, y+4, "  ███  ", C.purple, C.panel)
   txt(x+4, y+5, " █████ ", C.purple, C.panel)
-  txt(x+2, y+7, string.format("Ствол h=%.1f  pitch*%d", barrelHeight, pitchSign), C.cyan, C.panel)
+  txt(x+2, y+7, string.format("h=%.1f  пов:%d  накл:%d", barrelHeight, yawOffset, pitchSign), C.cyan, C.panel)
 
   local barW = w - 4
   fill(x+2, y+8, barW, 1, C.energyBg)
@@ -383,13 +387,14 @@ local function drawBottom()
   local y = screenH - 2
   fill(1, y, screenW, 2, C.panel)
   local items = {
-    {id="all_on",  label="Турели ВКЛ",   active=true, col=C.yellow},
-    {id="all_off", label="Турели ВЫКЛ",  active=true, col=C.gray},
-    {id="calib",   label="Рекалібровка", active=true, col=C.green},
-    {id="flip",    label="Инверт pitch", active=true, col=C.cyan},
-    {id="mobs",    label="Мобы",         active=attackMobs, col=C.yellow},
-    {id="players", label="Игроки",       active=attackPlayers, col=C.yellow},
-    {id="exit",    label="Выход",        active=true, col=C.red},
+    {id="all_on",  label="Турели ВКЛ",    active=true, col=C.yellow},
+    {id="all_off", label="Турели ВЫКЛ",   active=true, col=C.gray},
+    {id="calib",   label="Калибровка",    active=true, col=C.green},
+    {id="flipY",   label="Инверт повор.", active=true, col=C.cyan},
+    {id="flipP",   label="Инверт наклон", active=true, col=C.cyan},
+    {id="mobs",    label="Мобы",          active=attackMobs, col=C.yellow},
+    {id="players", label="Игроки",        active=attackPlayers, col=C.yellow},
+    {id="exit",    label="Выход",         active=true, col=C.red},
   }
   local bx = 2
   for _, it in ipairs(items) do
@@ -402,10 +407,14 @@ local function drawBottom()
       elseif it.id=="calib" then
         DETECTOR_POS = nil
         autoCalibrateDetector(true)
-      elseif it.id=="flip" then
+      elseif it.id=="flipY" then
+        yawOffset = (yawOffset + 180) % 360
+        saveConfig()
+        statusMsg = "Смещение поворота: " .. yawOffset
+      elseif it.id=="flipP" then
         pitchSign = -pitchSign
         saveConfig()
-        statusMsg = "pitchSign = " .. pitchSign
+        statusMsg = "Знак наклона: " .. pitchSign
       elseif it.id=="mobs" then attackMobs = not attackMobs; saveConfig()
       elseif it.id=="players" then attackPlayers = not attackPlayers; saveConfig()
       elseif it.id=="exit" then running = false
@@ -418,13 +427,13 @@ end
 local function drawUI()
   buttons = {}
   fill(1,1,screenW,screenH, C.bg)
-  center(1, "═══ ECS® Security Systems AUTO ═══", C.title, C.bg)
+  center(1, "═══ ECS® Security Systems ═══", C.title, C.bg)
 
   if DETECTOR_POS then
-    txt(2, 2, string.format("Турелей: %d | Дет: %d,%d,%d | h=%.1f",
+    txt(2, 2, string.format("Турелей: %d | Детектор: %d, %d, %d | h=%.1f",
       #turrets, DETECTOR_POS.x, DETECTOR_POS.y, DETECTOR_POS.z, barrelHeight), C.text, C.bg)
   else
-    txt(2, 2, "Турелей: "..#turrets.." | АВТОКАЛИБРОВКА: встань к детектору", C.orange, C.bg)
+    txt(2, 2, "Турелей: "..#turrets.." | КАЛИБРОВКА: встань рядом с детектором", C.orange, C.bg)
   end
 
   local cols = math.min(4, math.max(1, #turrets))
@@ -441,7 +450,7 @@ local function drawUI()
 
   txt(2, screenH-6, "Цель: " .. tostring(lastTarget), C.orange, C.bg)
   txt(2, screenH-5, statusMsg, C.cyan, C.bg)
-  txt(2, screenH-4, "DBG: " .. tostring(debugMsg), C.yellow, C.bg)
+  txt(2, screenH-4, "Отладка: " .. tostring(debugMsg), C.yellow, C.bg)
   drawBottom()
 end
 
@@ -489,7 +498,7 @@ local function main()
   powerAll(false)
   saveConfig()
   term.clear()
-  print("Отключено.")
+  print("Система отключена.")
 end
 
 local ok, err = pcall(main)
