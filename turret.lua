@@ -1,5 +1,5 @@
 -- ============================================================
--- ECS® Security Systems v16
+-- ECS® Security Systems v17
 -- Детектор ставится на 1 блок ВЫШЕ турели
 -- 0°=Север, 90°=Восток | формула atan2(dx, -dz)
 -- ============================================================
@@ -12,12 +12,12 @@ local computer = require("computer")
 local fs = require("filesystem")
 local serialization = require("serialization")
 
-local SCAN_RANGE = 48
-local FIRE_COOLDOWN = 0.42
+local SCAN_RANGE = 64
+local FIRE_COOLDOWN = 0.40
 local UPDATE_GUI = 0.25
-local COMBAT_EVERY = 0.32
-local LOCK_TIME = 2.8
-local PREDICTION_TIME = 0.38
+local COMBAT_EVERY = 0.30
+local LOCK_TIME = 2.6
+local PREDICTION_TIME = 0.35
 local CONFIG_PATH = "/home/turret_cfg.lua"
 
 local yawFine = 0
@@ -230,7 +230,6 @@ local function shouldAttack(ent)
     return attackPlayers
   end
 
-  -- всё остальное считаем мобом
   return attackMobs
 end
 
@@ -307,7 +306,7 @@ local function aimAndFire(t, ent)
 
   local yaw, pitch, dist = computeAim(ent)
 
-  if dist < 2.0 or dist > SCAN_RANGE + 8 then
+  if dist < 1.8 or dist > SCAN_RANGE + 6 then
     debugMsg = string.format("дист:%.1f", dist)
     return false
   end
@@ -315,7 +314,7 @@ local function aimAndFire(t, ent)
   pcall(function() t.proxy.moveTo(yaw, pitch) end)
 
   local wait, onTarget = 0, false
-  while wait < 2.0 do
+  while wait < 2.2 do
     pcall(function() onTarget = t.proxy.isOnTarget() end)
     if onTarget then break end
     os.sleep(0.05)
@@ -363,7 +362,6 @@ local function doCombat()
 
   local ents = getEntities()
 
-  -- Всегда показываем реальные имена
   local names = {}
   for i = 1, math.min(5, #ents) do
     table.insert(names, tostring(ents[i].name or "?"))
@@ -387,7 +385,7 @@ local function doCombat()
       if shouldAttack(ent) and tostring(ent.name) == lockedTarget.name then
         local ddx = (ent.x or 0) - (lockedTarget.x or 0)
         local ddz = (ent.z or 0) - (lockedTarget.z or 0)
-        if ddx * ddx + ddz * ddz < 180 then
+        if ddx * ddx + ddz * ddz < 200 then
           target = ent
           lockedTarget.x = ent.x
           lockedTarget.y = ent.y
@@ -516,7 +514,7 @@ end
 local function drawUI()
   buttons = {}
   fill(1, 1, screenW, screenH, C.bg)
-  center(1, "═══ ECS® Security Systems v16 ═══", C.title, C.bg)
+  center(1, "═══ ECS® Security Systems v17 ═══", C.title, C.bg)
 
   if TURRET_POS then
     txt(2, 2, string.format("Турелей: %d | Ствол: %.2f  %.2f  %.2f | 0°=Север",
