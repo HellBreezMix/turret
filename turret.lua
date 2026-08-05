@@ -1,5 +1,5 @@
 -- ============================================================
--- ECS® Security Systems v15
+-- ECS® Security Systems v16
 -- Детектор ставится на 1 блок ВЫШЕ турели
 -- 0°=Север, 90°=Восток | формула atan2(dx, -dz)
 -- ============================================================
@@ -17,12 +17,12 @@ local FIRE_COOLDOWN = 0.42
 local UPDATE_GUI = 0.25
 local COMBAT_EVERY = 0.32
 local LOCK_TIME = 2.8
-local PREDICTION_TIME = 0.38          -- насколько секунд вперёд целиться
+local PREDICTION_TIME = 0.38
 local CONFIG_PATH = "/home/turret_cfg.lua"
 
 local yawFine = 0
 local pitchSign = 1
-local aimHeight = 1.35                -- в голову
+local aimHeight = 1.35
 
 local C = {
   bg=0x0A0A14, panel=0x141420, border=0x3A3A60, text=0xD8D8F0,
@@ -41,11 +41,8 @@ local screenW, screenH = 80, 25
 local buttons = {}
 local TURRET_POS = nil
 local lockedTarget = nil
-local previousPos = {}                -- для предсказания
+local previousPos = {}
 
----------------------------------------------------------------
--- Конфиг
----------------------------------------------------------------
 local function saveConfig()
   local data = {
     turret = TURRET_POS,
@@ -78,9 +75,6 @@ local function loadConfig()
   pitchSign = data.pitchSign or 1
 end
 
----------------------------------------------------------------
--- Графика
----------------------------------------------------------------
 local function setResolution()
   local maxW, maxH = gpu.maxResolution()
   screenW, screenH = maxW, maxH
@@ -121,9 +115,6 @@ local function btn(x, y, w, h, label, active, color)
   return {x = x, y = y, w = w, h = h}
 end
 
----------------------------------------------------------------
--- Калибровка (детектор стоит на 1 блок ВЫШЕ турели)
----------------------------------------------------------------
 local function calibrateBarrel()
   if not detector then return false end
   local players = {}
@@ -135,8 +126,6 @@ local function calibrateBarrel()
   table.sort(players, function(a, b) return (a.range or 99) < (b.range or 99) end)
   local p = players[1]
 
-  -- Детектор выше турели → ствол относительно детектора ниже
-  -- Значение -1.05...-1.25 обычно самое точное
   TURRET_POS = {
     x = p.x or 0,
     y = (p.y or 0) - 1.12,
@@ -149,9 +138,6 @@ local function calibrateBarrel()
   return true
 end
 
----------------------------------------------------------------
--- Турели и детектор
----------------------------------------------------------------
 local function refreshTurrets()
   local found, newList = {}, {}
   for addr in component.list("os_energyturret") do
@@ -215,26 +201,36 @@ local function powerAll(on)
   end
 end
 
----------------------------------------------------------------
--- Логика целей
----------------------------------------------------------------
 local function isPlayer(ent)
   if not ent then return false end
-  if ent.name == "Player" then return true end
-  if ent.uuid and #tostring(ent.uuid) > 20 then return true end
+  local n = tostring(ent.name or ""):lower()
+  if n == "player" or n == "entityplayer" or n == "entityplayermp" then
+    return true
+  end
   return false
 end
 
 local function isItem(name)
   if not name then return true end
-  return tostring(name):lower():find("item") ~= nil
+  local n = tostring(name):lower()
+  if n == "item" or n:find("^item%.") or n:find("entityitem") then
+    return true
+  end
+  return false
 end
 
 local function shouldAttack(ent)
-  if not ent or not ent.name or isItem(ent.name) then return false end
+  if not ent or not ent.name then return false end
+  if isItem(ent.name) then return false end
+
   local n = tostring(ent.name):lower()
   if whitelist[n] or whitelist[ent.name] then return false end
-  if isPlayer(ent) then return attackPlayers end
+
+  if isPlayer(ent) then
+    return attackPlayers
+  end
+
+  -- всё остальное считаем мобом
   return attackMobs
 end
 
@@ -263,16 +259,12 @@ local function dirName(yaw)
   return "З"
 end
 
----------------------------------------------------------------
--- Наведение с предсказанием
----------------------------------------------------------------
 local function computeAim(ent)
   local name = tostring(ent.name or "unknown")
   local cx = ent.x or 0
   local cy = ent.y or 0
   local cz = ent.z or 0
 
-  -- Предсказание движения
   local predX, predY, predZ = cx, cy, cz
   local prev = previousPos[name]
   local now = computer.uptime()
@@ -315,16 +307,15 @@ local function aimAndFire(t, ent)
 
   local yaw, pitch, dist = computeAim(ent)
 
-  if dist < 2.2 or dist > SCAN_RANGE + 6 then
+  if dist < 2.0 or dist > SCAN_RANGE + 8 then
     debugMsg = string.format("дист:%.1f", dist)
     return false
   end
 
   pcall(function() t.proxy.moveTo(yaw, pitch) end)
 
-  -- Ждём наведения
   local wait, onTarget = 0, false
-  while wait < 1.35 do
+  while wait < 2.0 do
     pcall(function() onTarget = t.proxy.isOnTarget() end)
     if onTarget then break end
     os.sleep(0.05)
@@ -351,9 +342,6 @@ local function aimAndFire(t, ent)
   return fired
 end
 
----------------------------------------------------------------
--- Боевой цикл
----------------------------------------------------------------
 local function doCombat()
   if not TURRET_POS then
     lastTarget = "под турель → Калибровка"
@@ -374,7 +362,17 @@ local function doCombat()
   end
 
   local ents = getEntities()
+
+  -- Всегда показываем реальные имена
+  local names = {}
+  for i = 1, math.min(5, #ents) do
+    table.insert(names, tostring(ents[i].name or "?"))
+  end
   statusMsg = "Скан: " .. #ents
+  if #names > 0 then
+    statusMsg = statusMsg .. " → " .. table.concat(names, ", ")
+  end
+
   if #ents == 0 then
     lastTarget = "нет целей"
     lockedTarget = nil
@@ -384,7 +382,6 @@ local function doCombat()
   local now = computer.uptime()
   local target = nil
 
-  -- Пробуем держать предыдущую цель
   if lockedTarget and now < (lockedTarget.lockUntil or 0) then
     for _, ent in ipairs(ents) do
       if shouldAttack(ent) and tostring(ent.name) == lockedTarget.name then
@@ -401,11 +398,10 @@ local function doCombat()
     end
   end
 
-  -- Ищем новую цель (игроки в приоритете)
   if not target then
     table.sort(ents, function(a, b)
       local ap, bp = isPlayer(a), isPlayer(b)
-      if ap ~= bp then return ap end          -- игроки первыми
+      if ap ~= bp then return ap end
       local da = ((a.x or 0) - TURRET_POS.x)^2 + ((a.z or 0) - TURRET_POS.z)^2
       local db = ((b.x or 0) - TURRET_POS.x)^2 + ((b.z or 0) - TURRET_POS.z)^2
       return da < db
@@ -425,7 +421,7 @@ local function doCombat()
   end
 
   if not target then
-    lastTarget = "белый список"
+    lastTarget = "белый список / фильтр"
     return
   end
 
@@ -439,9 +435,6 @@ local function doCombat()
   end
 end
 
----------------------------------------------------------------
--- Интерфейс
----------------------------------------------------------------
 local function drawCard(idx, t, x, y, w, h)
   box(x, y, w, h, C.border, C.panel)
   txt(x + 2, y + 1, t.name, C.yellow, C.panel)
@@ -523,7 +516,7 @@ end
 local function drawUI()
   buttons = {}
   fill(1, 1, screenW, screenH, C.bg)
-  center(1, "═══ ECS® Security Systems v15 ═══", C.title, C.bg)
+  center(1, "═══ ECS® Security Systems v16 ═══", C.title, C.bg)
 
   if TURRET_POS then
     txt(2, 2, string.format("Турелей: %d | Ствол: %.2f  %.2f  %.2f | 0°=Север",
@@ -553,9 +546,6 @@ local function drawUI()
   drawBottom()
 end
 
----------------------------------------------------------------
--- Главный цикл
----------------------------------------------------------------
 local function main()
   setResolution()
   term.clear()
