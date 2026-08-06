@@ -1,8 +1,9 @@
--- ECS® Security Systems v26
+-- ============================================================
+-- ECS® Security Systems v27
 -- Стабильный интерфейс + нормальная иконка турели
--- Фикс: иконка больше не похожа на гранату
+-- Фикс: иконка — длинный ствол, понятная форма
 -- Фикс: турели больше не стреляют выше цели (исправлена калибровка)
--- Фикс: кнопка "Игроки" теперь реально работает
+-- Фикс: кнопка "Игроки" теперь реально работает (жёсткое определение игроков)
 -- ============================================================
 
 local component = require("component")
@@ -15,12 +16,12 @@ local serialization = require("serialization")
 
 local SCAN_RANGE = 64
 local FIRE_COOLDOWN = 0.40
-local UPDATE_GUI = 0.45          -- выше = меньше мигания
+local UPDATE_GUI = 0.45
 local COMBAT_EVERY = 0.32
 local LOCK_TIME = 2.8
 local PREDICTION_TIME = 0.35
 local CALIB_DELAY = 5.0
-local AIM_HEIGHT = 0.9           -- высота прицеливания относительно ног цели (0.0 = ноги, 1.6 = глаза)
+local AIM_HEIGHT = 0.9
 local CONFIG_PATH = "/home/turret_cfg.lua"
 
 local C = {
@@ -62,6 +63,17 @@ local NEUTRALS = {
   horse=true, donkey=true, mule=true, mooshroom=true,
   bat=true, squid=true, villager=true, iron_golem=true,
   snowman=true, ocelot=true, wolf=true,
+}
+
+local MOBS = {
+  zombie=true, skeleton=true, creeper=true, spider=true, enderman=true,
+  witch=true, slime=true, silverfish=true, blaze=true, ghast=true,
+  pigzombie=true, magma_cube=true, cave_spider=true, endermite=true,
+  guardian=true, elder_guardian=true, shulker=true, wither=true,
+  zombie_villager=true, husk=true, stray=true, vex=true, vindicator=true,
+  evoker=true, illusioner=true, phantom=true, drowned=true, pillager=true,
+  ravager=true, hoglin=true, piglin=true, zoglin=true, strider=true,
+  wither_skeleton=true, zombie_pigman=true,
 }
 
 ---------------------------------------------------------------
@@ -149,28 +161,28 @@ local function btn(x, y, w, h, label, active, color)
   return {x=x, y=y, w=w, h=h}
 end
 
--- Более читаемая иконка турели (вид сбоку)
+-- Турель с длинным стволом (вид сбоку)
 local function drawTurretIcon(x, y, bg)
   gpu.setBackground(bg)
 
   -- Длинный ствол
   gpu.setForeground(0xDDDDEE)
-  gpu.set(x,     y+1, "█████████")
-  gpu.set(x+9,   y+1, "█")
+  gpu.set(x,     y+1, "██████████████")
+  gpu.set(x+14,  y+1, "█")
 
   -- Голова
   gpu.setForeground(0xAAAABB)
-  gpu.set(x+3,   y,   "████")
-  gpu.set(x+2,   y+2, "██████")
+  gpu.set(x+5,   y,   "████")
+  gpu.set(x+4,   y+2, "██████")
 
   -- Поворотный узел
   gpu.setForeground(0x777788)
-  gpu.set(x+4,   y+3, "████")
+  gpu.set(x+6,   y+3, "████")
 
   -- Основание
   gpu.setForeground(0x555566)
-  gpu.set(x+3,   y+4, "██████")
-  gpu.set(x+2,   y+5, "████████")
+  gpu.set(x+5,   y+4, "██████")
+  gpu.set(x+4,   y+5, "████████")
 end
 
 ---------------------------------------------------------------
@@ -279,7 +291,6 @@ local function finishCalibration()
   table.sort(players, function(a, b) return (a.range or 99) < (b.range or 99) end)
   local p = players[1]
 
-  -- Когда стоишь ПОД стволом, высота ствола ≈ глаза игрока (+1.55)
   t.pos = {
     x = p.x or 0,
     y = (p.y or 0) + 1.55,
@@ -347,14 +358,25 @@ end
 ---------------------------------------------------------------
 local function isPlayer(ent)
   if not ent then return false end
-  -- Помеченные из scanPlayers
   if ent._isPlayer then return true end
+
   local n = tostring(ent.name or ""):lower()
+
+  -- Классические обозначения игрока
   if n == "player" or n == "entityplayer" or n == "entityplayermp" then
     return true
   end
-  -- Дополнительно: если есть username/displayName
   if ent.username or ent.displayName then return true end
+
+  -- Нейтралы и мобы — не игроки
+  if NEUTRALS[n] or MOBS[n] then return false end
+
+  -- Если имя содержит точку или "entity." — скорее всего моб/сущность
+  if n:find("%.") or n:find("entity") then return false end
+
+  -- Всё остальное (ники вроде hellbreez) считаем игроком
+  if #n >= 3 then return true end
+
   return false
 end
 
@@ -395,7 +417,7 @@ local function getEntities()
     end
     for _, p in ipairs(detector.scanPlayers(SCAN_RANGE) or {}) do
       if p then
-        p._isPlayer = true          -- помечаем, чтобы isPlayer работал правильно
+        p._isPlayer = true
         table.insert(list, p)
       end
     end
@@ -578,8 +600,8 @@ local function drawCard(idx, t, x, y, w, h)
   if #shortName > w-4 then shortName = shortName:sub(1, w-5) .. "…" end
   txt(x+2, y+1, shortName, isSel and C.yellow or C.text, bgCol)
 
-  -- центрируем иконку (ширина ~10)
-  drawTurretIcon(x + math.floor((w-10)/2), y+3, bgCol)
+  -- центрируем иконку (ширина ~15)
+  drawTurretIcon(x + math.floor((w-15)/2), y+3, bgCol)
 
   if not t.pos then
     txt(x+2, y+9, "нет калибровки", C.red, bgCol)
@@ -697,7 +719,7 @@ end
 local function drawMainUI()
   buttons = {}
   fill(1, 1, screenW, screenH, C.bg)
-  center(1, "═══ ECS® Security Systems v26 ═══", C.title, C.bg)
+  center(1, "═══ ECS® Security Systems v27 ═══", C.title, C.bg)
 
   if calibratingUntil > 0 then
     local left = math.max(0, calibratingUntil - computer.uptime())
