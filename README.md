@@ -23,9 +23,9 @@
 ---
 
 ## Установка
-установщик:
-wget -f https://raw.githubusercontent.com/HellBreezMix/turret/main/install.lua install.lua
-запускаем установщик:
-home/install.lua
-запуск:
-turret.lua
+
+- Установщик - wget -f https://raw.githubusercontent.com/HellBreezMix/turret/main/install.lua install.lua
+- Запускаем установщик - home/install.lua
+- Запуск программы - turret.lua
+
+---
