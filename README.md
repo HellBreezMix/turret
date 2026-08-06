@@ -1,6 +1,6 @@
 # Turret Security System
 
-Программа управления энергетическими турелями из мода **OpenSecurity** для **OpenComputers** (Minecraft 1.7.10).
+Программа управления турелями из мода **OpenSecurity** для **OpenComputers** (Minecraft 1.7.10).
 ---
 
 ## Возможности
