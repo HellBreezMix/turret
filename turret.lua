@@ -1,8 +1,7 @@
 -- ============================================================
--- ECS® Security Systems v18
--- Индивидуальная настройка каждой турели
--- Детектор на 1 блок ВЫШЕ турели
--- 0°=Север, 90°=Восток | atan2(dx, -dz)
+-- ECS® Security Systems v19
+-- Калибровка с задержкой + Управление белым списком
+-- Турели ставятся вплотную под детектором
 -- ============================================================
 
 local component = require("component")
@@ -12,6 +11,7 @@ local gpu = component.gpu
 local computer = require("computer")
 local fs = require("filesystem")
 local serialization = require("serialization")
+local keyboard = require("keyboard")
 
 local SCAN_RANGE = 64
 local FIRE_COOLDOWN = 0.40
@@ -19,6 +19,7 @@ local UPDATE_GUI = 0.25
 local COMBAT_EVERY = 0.30
 local LOCK_TIME = 2.6
 local PREDICTION_TIME = 0.35
+local CALIB_DELAY = 5.5          -- секунд на то, чтобы добежать под ствол
 local CONFIG_PATH = "/home/turret_cfg.lua"
 
 local C = {
@@ -36,12 +37,13 @@ local lastFire, lastCombat, lastDraw = {}, 0, 0
 local lastTarget, statusMsg, debugMsg = "—", "", ""
 local screenW, screenH = 80, 25
 local buttons = {}
-local selected = 1          -- индекс выбранной турели
+local selected = 1
 local previousPos = {}
 local lockedTarget = nil
+local calibratingUntil = 0       -- время, когда закончится обратный отсчёт
 
 ---------------------------------------------------------------
--- Конфиг (теперь хранит настройки каждой турели)
+-- Конфиг
 ---------------------------------------------------------------
 local function saveConfig()
   local tdata = {}
@@ -80,8 +82,6 @@ local function loadConfig()
   if data.attackMobs ~= nil then attackMobs = data.attackMobs end
   if data.attackPlayers ~= nil then attackPlayers = data.attackPlayers end
   selected = data.selected or 1
-
-  -- настройки турелей подтянем после refreshTurrets
   _G.__savedTurretData = data.turrets or {}
 end
 
@@ -189,9 +189,9 @@ local function powerTurret(t, on)
   pcall(function()
     if on then
       t.proxy.powerOn()
-      os.sleep(0.12)
+      os.sleep(0.10)
       pcall(function() t.proxy.extendShaft(2) end)
-      os.sleep(0.08)
+      os.sleep(0.06)
       t.proxy.setArmed(true)
     else
       pcall(function() t.proxy.setArmed(false) end)
@@ -210,21 +210,34 @@ local function powerAll(on)
 end
 
 ---------------------------------------------------------------
--- Калибровка выбранной турели
+-- Калибровка с задержкой
 ---------------------------------------------------------------
-local function calibrateBarrel()
+local function startCalibration()
+  local t = getSelected()
+  if not t then
+    statusMsg = "Сначала выбери турель"
+    return
+  end
+  calibratingUntil = computer.uptime() + CALIB_DELAY
+  statusMsg = string.format("Калибровка %s через %.0f сек! Вставай под ствол!", t.name, CALIB_DELAY)
+end
+
+local function finishCalibration()
   local t = getSelected()
   if not t or not detector then
-    statusMsg = "Нет выбранной турели"
-    return false
+    statusMsg = "Ошибка калибровки"
+    calibratingUntil = 0
+    return
   end
 
   local players = {}
-  pcall(function() players = detector.scanPlayers(6) or {} end)
+  pcall(function() players = detector.scanPlayers(8) or {} end)
   if #players == 0 then
-    statusMsg = "Встань РОВНО ПОД ствол выбранной турели"
-    return false
+    statusMsg = "Никого не видно под стволом!"
+    calibratingUntil = 0
+    return
   end
+
   table.sort(players, function(a, b) return (a.range or 99) < (b.range or 99) end)
   local p = players[1]
 
@@ -235,8 +248,65 @@ local function calibrateBarrel()
   }
   t.yawFine = 0
   saveConfig()
-  statusMsg = string.format("%s → ствол: %.2f  %.2f  %.2f", t.name, t.pos.x, t.pos.y, t.pos.z)
-  return true
+  statusMsg = string.format("%s откалибрована: %.2f  %.2f  %.2f", t.name, t.pos.x, t.pos.y, t.pos.z)
+  calibratingUntil = 0
+end
+
+---------------------------------------------------------------
+-- Белый список
+---------------------------------------------------------------
+local function addToWhitelist()
+  term.clear()
+  print("=== Белый список ===")
+  print("Игроки, по которым НЕ стреляем:")
+  for name, _ in pairs(whitelist) do
+    print("  - " .. name)
+  end
+  print()
+  print("Введи ник для ДОБАВЛЕНИЯ (или пусто для выхода):")
+  local name = term.read()
+  if name then
+    name = name:gsub("%s+", ""):lower()
+    if #name > 0 then
+      whitelist[name] = true
+      saveConfig()
+      print("Добавлен: " .. name)
+      os.sleep(1.2)
+    end
+  end
+  term.clear()
+end
+
+local function removeFromWhitelist()
+  term.clear()
+  print("=== Удаление из белого списка ===")
+  local list = {}
+  for name, _ in pairs(whitelist) do
+    table.insert(list, name)
+  end
+  table.sort(list)
+
+  if #list == 0 then
+    print("Список пуст")
+    os.sleep(1.5)
+    term.clear()
+    return
+  end
+
+  for i, name in ipairs(list) do
+    print(i .. ". " .. name)
+  end
+  print()
+  print("Введи номер для удаления (или пусто):")
+  local input = term.read()
+  local num = tonumber(input)
+  if num and list[num] then
+    whitelist[list[num]] = nil
+    saveConfig()
+    print("Удалён: " .. list[num])
+    os.sleep(1.2)
+  end
+  term.clear()
 end
 
 ---------------------------------------------------------------
@@ -257,9 +327,19 @@ end
 local function shouldAttack(ent)
   if not ent or not ent.name then return false end
   if isItem(ent.name) then return false end
+
   local n = tostring(ent.name):lower()
   if whitelist[n] or whitelist[ent.name] then return false end
-  if isPlayer(ent) then return attackPlayers end
+
+  -- если это игрок — проверяем по нику тоже
+  if isPlayer(ent) then
+    -- в некоторых версиях имя игрока приходит как "Player", а реальный ник в другом поле
+    -- поэтому дополнительно проверяем возможные поля
+    if ent.username and whitelist[tostring(ent.username):lower()] then return false end
+    if ent.displayName and whitelist[tostring(ent.displayName):lower()] then return false end
+    return attackPlayers
+  end
+
   return attackMobs
 end
 
@@ -306,7 +386,7 @@ local function computeAim(t, ent)
   previousPos[name] = {x = cx, y = cy, z = cz, t = now}
 
   local dx = predX - t.pos.x
-  local dy = (predY + aimHeight) - t.pos.y
+  local dy = (predY + 1.35) - t.pos.y
   local dz = predZ - t.pos.z
 
   local distXZ = math.sqrt(dx*dx + dz*dz)
@@ -368,6 +448,9 @@ local function aimAndFire(t, ent)
 end
 
 local function doCombat()
+  -- во время калибровки не стреляем
+  if calibratingUntil > 0 then return end
+
   local anyOn = false
   for _, t in ipairs(turrets) do
     if t.powered and t.pos then anyOn = true break end
@@ -416,7 +499,6 @@ local function doCombat()
   end
 
   if not target then
-    -- берём ближайшую к первой откалиброванной турели
     local refPos = nil
     for _, t in ipairs(turrets) do
       if t.pos then refPos = t.pos break end
@@ -492,7 +574,6 @@ local function drawCard(idx, t, x, y, w, h)
   buttons["on_" .. idx] = {x = bOn.x, y = bOn.y, w = 6, h = 1, action = function() powerTurret(t, true) end}
   buttons["off_" .. idx] = {x = bOff.x, y = bOff.y, w = 6, h = 1, action = function() powerTurret(t, false) end}
 
-  -- клик по карточке = выбор турели
   buttons["sel_" .. idx] = {
     x = x, y = y, w = w, h = h - 2,
     action = function()
@@ -507,19 +588,18 @@ local function drawBottom()
   local y = screenH - 2
   fill(1, y, screenW, 2, C.panel)
 
-  local t = getSelected()
-  local selName = t and t.name or "—"
-
   local items = {
-    {id = "all_on",  label = "Все ВКЛ",     active = true, col = C.yellow},
-    {id = "all_off", label = "Все ВЫКЛ",    active = true, col = C.gray},
-    {id = "calib",   label = "Калибровка",  active = true, col = C.green},
-    {id = "left",    label = "◀",           active = true, col = C.cyan},
-    {id = "right",   label = "▶",           active = true, col = C.cyan},
-    {id = "flipP",   label = "Наклон",      active = true, col = C.cyan},
-    {id = "mobs",    label = "Мобы",        active = attackMobs, col = C.yellow},
-    {id = "players", label = "Игроки",      active = attackPlayers, col = C.yellow},
-    {id = "exit",    label = "Выход",       active = true, col = C.red},
+    {id = "all_on",   label = "Все ВКЛ",      active = true, col = C.yellow},
+    {id = "all_off",  label = "Все ВЫКЛ",     active = true, col = C.gray},
+    {id = "calib",    label = "Калибровка",   active = true, col = C.green},
+    {id = "left",     label = "◀",            active = true, col = C.cyan},
+    {id = "right",    label = "▶",            active = true, col = C.cyan},
+    {id = "flipP",    label = "Наклон",       active = true, col = C.cyan},
+    {id = "wl_add",   label = "+Белый",       active = true, col = C.green},
+    {id = "wl_rem",   label = "-Белый",       active = true, col = C.orange},
+    {id = "mobs",     label = "Мобы",         active = attackMobs, col = C.yellow},
+    {id = "players",  label = "Игроки",       active = attackPlayers, col = C.yellow},
+    {id = "exit",     label = "Выход",        active = true, col = C.red},
   }
 
   local bx = 2
@@ -533,7 +613,7 @@ local function drawBottom()
         local cur = getSelected()
         if it.id == "all_on" then powerAll(true)
         elseif it.id == "all_off" then powerAll(false)
-        elseif it.id == "calib" then calibrateBarrel()
+        elseif it.id == "calib" then startCalibration()
         elseif it.id == "left" and cur then
           cur.yawFine = (cur.yawFine or 0) - 1.5
           saveConfig()
@@ -546,6 +626,8 @@ local function drawBottom()
           cur.pitchSign = -(cur.pitchSign or 1)
           saveConfig()
           statusMsg = cur.name .. " наклон: " .. cur.pitchSign
+        elseif it.id == "wl_add" then addToWhitelist()
+        elseif it.id == "wl_rem" then removeFromWhitelist()
         elseif it.id == "mobs" then
           attackMobs = not attackMobs
           saveConfig()
@@ -564,14 +646,17 @@ end
 local function drawUI()
   buttons = {}
   fill(1, 1, screenW, screenH, C.bg)
-  center(1, "═══ ECS® Security Systems v18 ═══", C.title, C.bg)
+  center(1, "═══ ECS® Security Systems v19 ═══", C.title, C.bg)
 
   local t = getSelected()
-  if t and t.pos then
+  if calibratingUntil > 0 then
+    local left = math.max(0, calibratingUntil - computer.uptime())
+    txt(2, 2, string.format(">>> КАЛИБРОВКА через %.1f сек — вставай под ствол! <<<", left), C.orange, C.bg)
+  elseif t and t.pos then
     txt(2, 2, string.format("Выбрана: %s | Ствол: %.2f  %.2f  %.2f | yaw:%.1f",
       t.name, t.pos.x, t.pos.y, t.pos.z, t.yawFine or 0), C.text, C.bg)
   else
-    txt(2, 2, "Выбери турель кликом по карточке → Калибровка", C.orange, C.bg)
+    txt(2, 2, "Выбери турель → нажми Калибровка → быстро встань под ствол", C.orange, C.bg)
   end
 
   local cols = math.min(4, math.max(1, #turrets))
@@ -615,6 +700,11 @@ local function main()
   while running do
     local now = computer.uptime()
 
+    -- Обратный отсчёт калибровки
+    if calibratingUntil > 0 and now >= calibratingUntil then
+      finishCalibration()
+    end
+
     if now - lastDraw >= UPDATE_GUI then
       refreshTurrets()
       drawUI()
@@ -628,7 +718,6 @@ local function main()
 
     local e, _, x, y, button = event.pull(0.05)
     if e == "touch" and button == 0 then
-      -- сначала проверяем кнопки (они поверх)
       local handled = false
       for id, b in pairs(buttons) do
         if not id:find("^sel_") and x >= b.x and x < b.x + b.w and y >= b.y and y < b.y + b.h then
