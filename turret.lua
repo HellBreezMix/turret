@@ -1,12 +1,10 @@
 -- ============================================================
--- ECS® Security Systems v28
--- Стабильный интерфейс + нормальная иконка турели
--- Фикс: иконка — длинный ствол, боковой вид
--- Фикс: турели больше не стреляют выше цели
--- Фикс: кнопка "Игроки" работает
--- Фикс: мобы снова видятся (исправлено слишком агрессивное определение игроков)
+-- ECS® Security Systems v30
+-- Упрощённая логика + максимальный радиус детектора (64)
+--   Мобы   = всё, что не игрок и не предмет
+--   Игроки = только по кнопке + белый список
+--   Нейтралы полностью убраны
 -- ============================================================
-
 local component = require("component")
 local event = require("event")
 local term = require("term")
@@ -15,7 +13,7 @@ local computer = require("computer")
 local fs = require("filesystem")
 local serialization = require("serialization")
 
-local SCAN_RANGE = 64
+local SCAN_RANGE = 64          -- максимум, который разрешает OpenSecurity (1-64)
 local FIRE_COOLDOWN = 0.40
 local UPDATE_GUI = 0.45
 local COMBAT_EVERY = 0.32
@@ -46,7 +44,7 @@ local C = {
 }
 
 local turrets, detector = {}, nil
-local attackMobs, attackPlayers, attackNeutrals = true, true, false
+local attackMobs, attackPlayers = true, true
 local whitelist = { hellbreez = true }
 local running = true
 local lastFire, lastCombat, lastDraw = {}, 0, 0
@@ -58,24 +56,6 @@ local previousPos = {}
 local lockedTarget = nil
 local calibratingUntil = 0
 local mode = "main"
-
-local NEUTRALS = {
-  cow=true, pig=true, sheep=true, chicken=true, rabbit=true,
-  horse=true, donkey=true, mule=true, mooshroom=true,
-  bat=true, squid=true, villager=true, iron_golem=true,
-  snowman=true, ocelot=true, wolf=true,
-}
-
-local MOBS = {
-  zombie=true, skeleton=true, creeper=true, spider=true, enderman=true,
-  witch=true, slime=true, silverfish=true, blaze=true, ghast=true,
-  pigzombie=true, magma_cube=true, cave_spider=true, endermite=true,
-  guardian=true, elder_guardian=true, shulker=true, wither=true,
-  zombie_villager=true, husk=true, stray=true, vex=true, vindicator=true,
-  evoker=true, illusioner=true, phantom=true, drowned=true, pillager=true,
-  ravager=true, hoglin=true, piglin=true, zoglin=true, strider=true,
-  wither_skeleton=true, zombie_pigman=true, giant=true, ender_dragon=true,
-}
 
 ---------------------------------------------------------------
 -- Конфиг
@@ -96,7 +76,6 @@ local function saveConfig()
     whitelist = whitelist,
     attackMobs = attackMobs,
     attackPlayers = attackPlayers,
-    attackNeutrals = attackNeutrals,
     selected = selected,
   }
   local f = io.open(CONFIG_PATH, "w")
@@ -114,7 +93,6 @@ local function loadConfig()
   whitelist = data.whitelist or whitelist
   if data.attackMobs ~= nil then attackMobs = data.attackMobs end
   if data.attackPlayers ~= nil then attackPlayers = data.attackPlayers end
-  if data.attackNeutrals ~= nil then attackNeutrals = data.attackNeutrals end
   selected = data.selected or 1
   _G.__savedTurretData = data.turrets or {}
 end
@@ -162,7 +140,7 @@ local function btn(x, y, w, h, label, active, color)
   return {x=x, y=y, w=w, h=h}
 end
 
--- Боковой вид турели с длинным стволом (не шапка гвоздя)
+-- Боковой вид турели с длинным стволом
 local function drawTurretIcon(x, y, bg)
   gpu.setBackground(bg)
 
@@ -355,7 +333,7 @@ local function removeFromWhitelist()
 end
 
 ---------------------------------------------------------------
--- Логика боя
+-- Логика боя (упрощённая)
 ---------------------------------------------------------------
 local function isPlayer(ent)
   if not ent then return false end
@@ -363,16 +341,12 @@ local function isPlayer(ent)
 
   local n = tostring(ent.name or ""):lower()
 
-  -- Явные обозначения игрока
   if n == "player" or n == "entityplayer" or n == "entityplayermp" then
     return true
   end
   if ent.username or ent.displayName then return true end
 
-  -- Известные мобы и нейтралы — не игроки
-  if NEUTRALS[n] or MOBS[n] then return false end
-
-  -- Ключевые слова мобов (на случай разных названий от детектора)
+  -- Ключевые слова мобов — точно не игрок
   if n:find("zombie") or n:find("skeleton") or n:find("creeper") or
      n:find("spider") or n:find("enderman") or n:find("witch") or
      n:find("slime") or n:find("blaze") or n:find("ghast") or
@@ -381,28 +355,27 @@ local function isPlayer(ent)
      n:find("pillager") or n:find("ravager") or n:find("hoglin") or
      n:find("piglin") or n:find("vex") or n:find("vindicator") or
      n:find("evoker") or n:find("illusion") or n:find("stray") or
-     n:find("husk") or n:find("silverfish") or n:find("endermite") then
+     n:find("husk") or n:find("silverfish") or n:find("endermite") or
+     n:find("cow") or n:find("pig") or n:find("sheep") or n:find("chicken") or
+     n:find("rabbit") or n:find("horse") or n:find("villager") or n:find("wolf") or
+     n:find("ocelot") or n:find("bat") or n:find("squid") or n:find("golem") then
     return false
   end
 
   -- Полные имена сущностей
   if n:find("%.") or n:find("entity") then return false end
 
-  -- Простые ники (hellbreez и т.п.) — игроки
+  -- Простые ники — игроки
   if #n >= 3 then return true end
 
   return false
 end
 
-local function isNeutral(ent)
-  if not ent or not ent.name then return false end
-  return NEUTRALS[tostring(ent.name):lower()] == true
-end
-
 local function isItem(name)
   if not name then return true end
   local n = tostring(name):lower()
-  return n == "item" or n:find("^item%.") or n:find("entityitem") or n:find("xp") or n:find("orb")
+  return n == "item" or n:find("^item%.") or n:find("entityitem") or
+         n:find("xp") or n:find("orb") or n:find("arrow") or n:find("fireball")
 end
 
 local function shouldAttack(ent)
@@ -414,8 +387,12 @@ local function shouldAttack(ent)
   if ent.username and whitelist[tostring(ent.username):lower()] then return false end
   if ent.displayName and whitelist[tostring(ent.displayName):lower()] then return false end
 
-  if isPlayer(ent) then return attackPlayers end
-  if isNeutral(ent) then return attackNeutrals end
+  -- Игрок → только если включена кнопка "Игроки"
+  if isPlayer(ent) then
+    return attackPlayers
+  end
+
+  -- Всё остальное (любые мобы) → если включена кнопка "Мобы"
   return attackMobs
 end
 
@@ -532,7 +509,7 @@ local function doCombat()
     lastTarget = "турели выкл / нет калибровки"
     return
   end
-  if not (attackMobs or attackPlayers or attackNeutrals) then
+  if not (attackMobs or attackPlayers) then
     lastTarget = "атака выкл"
     return
   end
@@ -614,7 +591,6 @@ local function drawCard(idx, t, x, y, w, h)
   if #shortName > w-4 then shortName = shortName:sub(1, w-5) .. "…" end
   txt(x+2, y+1, shortName, isSel and C.yellow or C.text, bgCol)
 
-  -- центрируем иконку (ширина ~17)
   drawTurretIcon(x + math.floor((w-17)/2), y+3, bgCol)
 
   if not t.pos then
@@ -650,7 +626,6 @@ local function drawMainBottom()
     {id="reset",    label="Сброс",          col=C.orange},
     {id="wl",       label="Белый список",   col=C.yellow},
     {id="mobs",     label="Мобы",           col=attackMobs and C.yellow or C.gray},
-    {id="neutrals", label="Нейтралы",       col=attackNeutrals and C.yellow or C.gray},
     {id="players",  label="Игроки",         col=attackPlayers and C.yellow or C.gray},
     {id="exit",     label="Выход",          col=C.red},
   }
@@ -670,9 +645,6 @@ local function drawMainBottom()
         elseif it.id == "wl" then mode = "whitelist"
         elseif it.id == "mobs" then
           attackMobs = not attackMobs
-          saveConfig()
-        elseif it.id == "neutrals" then
-          attackNeutrals = not attackNeutrals
           saveConfig()
         elseif it.id == "players" then
           attackPlayers = not attackPlayers
@@ -733,7 +705,7 @@ end
 local function drawMainUI()
   buttons = {}
   fill(1, 1, screenW, screenH, C.bg)
-  center(1, "═══ ECS® Security Systems v28 ═══", C.title, C.bg)
+  center(1, "═══ ECS® Security Systems v30 ═══", C.title, C.bg)
 
   if calibratingUntil > 0 then
     local left = math.max(0, calibratingUntil - computer.uptime())
