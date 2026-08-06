@@ -1,8 +1,8 @@
--- ============================================================
--- ECS® Security Systems v25
+-- ECS® Security Systems v26
 -- Стабильный интерфейс + нормальная иконка турели
 -- Фикс: иконка больше не похожа на гранату
 -- Фикс: турели больше не стреляют выше цели (исправлена калибровка)
+-- Фикс: кнопка "Игроки" теперь реально работает
 -- ============================================================
 
 local component = require("component")
@@ -149,28 +149,28 @@ local function btn(x, y, w, h, label, active, color)
   return {x=x, y=y, w=w, h=h}
 end
 
--- Нормальная турель (вид сбоку) — больше не граната
+-- Более читаемая иконка турели (вид сбоку)
 local function drawTurretIcon(x, y, bg)
   gpu.setBackground(bg)
 
-  -- Ствол (длинный)
-  gpu.setForeground(0xCCCCDD)
-  gpu.set(x,   y+1, "████████")
-  gpu.set(x+8, y+1, "█")
+  -- Длинный ствол
+  gpu.setForeground(0xDDDDEE)
+  gpu.set(x,     y+1, "█████████")
+  gpu.set(x+9,   y+1, "█")
 
-  -- Голова турели
-  gpu.setForeground(0x9999AA)
-  gpu.set(x+2, y,   "████")
-  gpu.set(x+1, y+2, "██████")
+  -- Голова
+  gpu.setForeground(0xAAAABB)
+  gpu.set(x+3,   y,   "████")
+  gpu.set(x+2,   y+2, "██████")
 
-  -- Поворотный механизм
-  gpu.setForeground(0x666677)
-  gpu.set(x+3, y+3, "████")
+  -- Поворотный узел
+  gpu.setForeground(0x777788)
+  gpu.set(x+4,   y+3, "████")
 
   -- Основание
-  gpu.setForeground(0x444455)
-  gpu.set(x+2, y+4, "██████")
-  gpu.set(x+1, y+5, "████████")
+  gpu.setForeground(0x555566)
+  gpu.set(x+3,   y+4, "██████")
+  gpu.set(x+2,   y+5, "████████")
 end
 
 ---------------------------------------------------------------
@@ -279,8 +279,7 @@ local function finishCalibration()
   table.sort(players, function(a, b) return (a.range or 99) < (b.range or 99) end)
   local p = players[1]
 
-  -- ВАЖНО: когда стоишь ПОД стволом, высота ствола ≈ глаза игрока (+1.55)
-  -- Старый вариант (y - 1.12) ставил позицию турели слишком низко → ствол всегда смотрел вверх
+  -- Когда стоишь ПОД стволом, высота ствола ≈ глаза игрока (+1.55)
   t.pos = {
     x = p.x or 0,
     y = (p.y or 0) + 1.55,
@@ -348,8 +347,15 @@ end
 ---------------------------------------------------------------
 local function isPlayer(ent)
   if not ent then return false end
+  -- Помеченные из scanPlayers
+  if ent._isPlayer then return true end
   local n = tostring(ent.name or ""):lower()
-  return n == "player" or n == "entityplayer" or n == "entityplayermp"
+  if n == "player" or n == "entityplayer" or n == "entityplayermp" then
+    return true
+  end
+  -- Дополнительно: если есть username/displayName
+  if ent.username or ent.displayName then return true end
+  return false
 end
 
 local function isNeutral(ent)
@@ -367,7 +373,7 @@ local function shouldAttack(ent)
   if not ent or not ent.name then return false end
   if isItem(ent.name) then return false end
 
-  local n = tostring(ent.name):lower()
+  local n = tostring(ent.name or ""):lower()
   if whitelist[n] or whitelist[ent.name] then return false end
   if ent.username and whitelist[tostring(ent.username):lower()] then return false end
   if ent.displayName and whitelist[tostring(ent.displayName):lower()] then return false end
@@ -382,10 +388,16 @@ local function getEntities()
   local list = {}
   pcall(function()
     for _, e in ipairs(detector.scanEntities(SCAN_RANGE) or {}) do
-      if e and e.name and not isItem(e.name) then table.insert(list, e) end
+      if e and e.name and not isItem(e.name) then
+        e._isPlayer = false
+        table.insert(list, e)
+      end
     end
     for _, p in ipairs(detector.scanPlayers(SCAN_RANGE) or {}) do
-      if p then table.insert(list, p) end
+      if p then
+        p._isPlayer = true          -- помечаем, чтобы isPlayer работал правильно
+        table.insert(list, p)
+      end
     end
   end)
   return list
@@ -427,7 +439,6 @@ local function computeAim(t, ent)
   yaw = yaw % 360
   if yaw < 0 then yaw = yaw + 360 end
 
-  -- pitchBias позволяет тонко подкрутить вертикаль без перекалибровки
   local pitch = math.deg(math.atan2(dy, math.max(distXZ, 0.12))) * (t.pitchSign or 1)
   pitch = pitch + (t.pitchBias or 0)
   pitch = math.max(-45, math.min(90, pitch))
@@ -567,8 +578,8 @@ local function drawCard(idx, t, x, y, w, h)
   if #shortName > w-4 then shortName = shortName:sub(1, w-5) .. "…" end
   txt(x+2, y+1, shortName, isSel and C.yellow or C.text, bgCol)
 
-  -- центрируем иконку под новую ширину (9 символов)
-  drawTurretIcon(x + math.floor((w-9)/2), y+3, bgCol)
+  -- центрируем иконку (ширина ~10)
+  drawTurretIcon(x + math.floor((w-10)/2), y+3, bgCol)
 
   if not t.pos then
     txt(x+2, y+9, "нет калибровки", C.red, bgCol)
@@ -686,7 +697,7 @@ end
 local function drawMainUI()
   buttons = {}
   fill(1, 1, screenW, screenH, C.bg)
-  center(1, "═══ ECS® Security Systems v25 ═══", C.title, C.bg)
+  center(1, "═══ ECS® Security Systems v26 ═══", C.title, C.bg)
 
   if calibratingUntil > 0 then
     local left = math.max(0, calibratingUntil - computer.uptime())
@@ -783,7 +794,6 @@ local function main()
           end
         end
       end
-      -- принудительно обновляем сразу после клика
       drawUI()
       lastDraw = computer.uptime()
     elseif e == "interrupted" then
