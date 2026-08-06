@@ -1,6 +1,8 @@
 -- ============================================================
--- ECS® Security Systems v23
--- Стабильный интерфейс + нормальная иконка
+-- ECS® Security Systems v24
+-- Стабильный интерфейс + нормальная иконка турели
+-- Фикс: иконка больше не похожа на гранату
+-- Фикс: турели больше не стреляют выше цели
 -- ============================================================
 
 local component = require("component")
@@ -18,6 +20,7 @@ local COMBAT_EVERY = 0.32
 local LOCK_TIME = 2.8
 local PREDICTION_TIME = 0.35
 local CALIB_DELAY = 5.0
+local AIM_HEIGHT = 0.85          -- чем меньше — тем ниже целится (было 1.35)
 local CONFIG_PATH = "/home/turret_cfg.lua"
 
 local C = {
@@ -145,24 +148,28 @@ local function btn(x, y, w, h, label, active, color)
   return {x=x, y=y, w=w, h=h}
 end
 
--- Минималистичная турель (вид сбоку)
+-- Нормальная турель (вид сбоку) — больше не граната
 local function drawTurretIcon(x, y, bg)
   gpu.setBackground(bg)
 
-  -- Ствол
+  -- Ствол (длинный)
   gpu.setForeground(0xCCCCDD)
-  gpu.set(x,   y+1, "████")
-  gpu.set(x+4, y+1, "█")
+  gpu.set(x,   y+1, "████████")
+  gpu.set(x+8, y+1, "█")
 
-  -- Голова / корпус
-  gpu.setForeground(0x888899)
-  gpu.set(x+2, y,   "██")
-  gpu.set(x+1, y+2, "████")
+  -- Голова турели
+  gpu.setForeground(0x9999AA)
+  gpu.set(x+2, y,   "████")
+  gpu.set(x+1, y+2, "██████")
+
+  -- Поворотный механизм
+  gpu.setForeground(0x666677)
+  gpu.set(x+3, y+3, "████")
 
   -- Основание
-  gpu.setForeground(0x555566)
-  gpu.set(x+2, y+3, "██")
-  gpu.set(x+1, y+4, "████")
+  gpu.setForeground(0x444455)
+  gpu.set(x+2, y+4, "██████")
+  gpu.set(x+1, y+5, "████████")
 end
 
 ---------------------------------------------------------------
@@ -404,7 +411,7 @@ local function computeAim(t, ent)
   previousPos[name] = {x=cx, y=cy, z=cz, t=now}
 
   local dx = predX - t.pos.x
-  local dy = (predY + 1.35) - t.pos.y
+  local dy = (predY + AIM_HEIGHT) - t.pos.y
   local dz = predZ - t.pos.z
 
   local distXZ = math.sqrt(dx*dx + dz*dz)
@@ -552,7 +559,8 @@ local function drawCard(idx, t, x, y, w, h)
   if #shortName > w-4 then shortName = shortName:sub(1, w-5) .. "…" end
   txt(x+2, y+1, shortName, isSel and C.yellow or C.text, bgCol)
 
-  drawTurretIcon(x + math.floor((w-7)/2), y+3, bgCol)
+  -- центрируем иконку под новую ширину (9 символов)
+  drawTurretIcon(x + math.floor((w-9)/2), y+3, bgCol)
 
   if not t.pos then
     txt(x+2, y+9, "нет калибровки", C.red, bgCol)
@@ -670,7 +678,7 @@ end
 local function drawMainUI()
   buttons = {}
   fill(1, 1, screenW, screenH, C.bg)
-  center(1, "═══ ECS® Security Systems v23 ═══", C.title, C.bg)
+  center(1, "═══ ECS® Security Systems v24 ═══", C.title, C.bg)
 
   if calibratingUntil > 0 then
     local left = math.max(0, calibratingUntil - computer.uptime())
