@@ -20,7 +20,7 @@ local COMBAT_EVERY = 0.32
 local LOCK_TIME = 2.8
 local PREDICTION_TIME = 0.35
 local CALIB_DELAY = 5.0
-local AIM_HEIGHT = 0.85          -- чем меньше — тем ниже целится (было 1.35)
+local AIM_HEIGHT = 0.3          -- чем меньше — тем ниже целится (было 1.35)
 local CONFIG_PATH = "/home/turret_cfg.lua"
 
 local C = {
