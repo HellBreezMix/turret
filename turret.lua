@@ -1,11 +1,10 @@
 -- ============================================================
--- ECS® Security Systems v30
+-- Turret Security System by hellbreez
 -- Упрощённая логика + максимальный радиус детектора (64)
 --   Мобы   = всё, что не игрок и не предмет
 --   Игроки = только по кнопке + белый список
 --   Нейтралы полностью убраны
 -- ============================================================
-local component = require("component")
 local event = require("event")
 local term = require("term")
 local gpu = component.gpu
@@ -705,7 +704,7 @@ end
 local function drawMainUI()
   buttons = {}
   fill(1, 1, screenW, screenH, C.bg)
-  center(1, "═══ ECS® Security Systems v30 ═══", C.title, C.bg)
+  center(1, "Turret Security System by hellbreez", C.title, C.bg)
 
   if calibratingUntil > 0 then
     local left = math.max(0, calibratingUntil - computer.uptime())
