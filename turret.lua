@@ -1,6 +1,7 @@
 -- ============================================================
 -- Turret Security System by hellbreez
 -- ============================================================
+local component = require("component")
 local event = require("event")
 local term = require("term")
 local gpu = component.gpu
