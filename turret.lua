@@ -1,6 +1,7 @@
 -- ============================================================
--- ECS® Security Systems v20
--- Улучшенный интерфейс + Белый список + Сброс калибровки
+-- ECS® Security Systems v21
+-- Красивые карточки + нейтралы + удобная нижняя панель
+-- Турели ставятся вплотную под детектором
 -- ============================================================
 
 local component = require("component")
@@ -13,34 +14,38 @@ local serialization = require("serialization")
 
 local SCAN_RANGE = 64
 local FIRE_COOLDOWN = 0.40
-local UPDATE_GUI = 0.30
+local UPDATE_GUI = 0.28
 local COMBAT_EVERY = 0.30
 local LOCK_TIME = 2.6
 local PREDICTION_TIME = 0.35
-local CALIB_DELAY = 5.5
+local CALIB_DELAY = 5.0
 local CONFIG_PATH = "/home/turret_cfg.lua"
 
+-- Фиксированное смещение, когда турель стоит прямо под детектором
+local DEFAULT_OFFSET = { x = 0, y = -1.15, z = 0 }
+
 local C = {
-  bg       = 0x0A0A14,
-  panel    = 0x141420,
-  border   = 0x3A3A60,
-  text     = 0xD8D8F0,
+  bg       = 0x0A0A12,
+  panel    = 0x12121C,
+  border   = 0x3A3A55,
+  text     = 0xE0E0F0,
   yellow   = 0xFFD700,
   green    = 0x22DD55,
   red      = 0xFF3344,
-  purple   = 0xAA55FF,
-  gray     = 0x444455,
+  purple   = 0xAA44FF,
+  gray     = 0x3A3A4A,
   energy   = 0xFFCC22,
-  energyBg = 0x2A2A18,
+  energyBg = 0x222218,
   title    = 0x00FFBB,
   dark     = 0x000000,
   cyan     = 0x22CCFF,
   orange   = 0xFF8800,
-  selected = 0x1A2A4A,
+  selected = 0x1A2540,
+  cardBorder = 0x555577,
 }
 
 local turrets, detector = {}, nil
-local attackMobs, attackPlayers = true, true
+local attackMobs, attackPlayers, attackNeutrals = true, true, false
 local whitelist = { hellbreez = true }
 local running = true
 local lastFire, lastCombat, lastDraw = {}, 0, 0
@@ -51,7 +56,16 @@ local selected = 1
 local previousPos = {}
 local lockedTarget = nil
 local calibratingUntil = 0
-local mode = "main"          -- "main" | "whitelist"
+local mode = "main"
+
+-- Нейтральные мобы (ванилла + самые частые)
+local NEUTRALS = {
+  cow=true, pig=true, sheep=true, chicken=true, rabbit=true,
+  horse=true, donkey=true, mule=true, mooshroom=true,
+  bat=true, squid=true, villager=true, iron_golem=true,
+  snowman=true, ocelot=true, wolf=true, entitycow=true,
+  entitypig=true, entitysheep=true, entitychicken=true,
+}
 
 ---------------------------------------------------------------
 -- Конфиг
@@ -71,6 +85,7 @@ local function saveConfig()
     whitelist = whitelist,
     attackMobs = attackMobs,
     attackPlayers = attackPlayers,
+    attackNeutrals = attackNeutrals,
     selected = selected,
   }
   local f = io.open(CONFIG_PATH, "w")
@@ -88,6 +103,7 @@ local function loadConfig()
   whitelist = data.whitelist or whitelist
   if data.attackMobs ~= nil then attackMobs = data.attackMobs end
   if data.attackPlayers ~= nil then attackPlayers = data.attackPlayers end
+  if data.attackNeutrals ~= nil then attackNeutrals = data.attackNeutrals end
   selected = data.selected or 1
   _G.__savedTurretData = data.turrets or {}
 end
@@ -120,10 +136,10 @@ end
 local function box(x, y, w, h, border, bg)
   fill(x, y, w, h, bg or C.panel)
   gpu.setBackground(border or C.border)
-  gpu.fill(x,     y,     w, 1, " ")
-  gpu.fill(x,     y+h-1, w, 1, " ")
-  gpu.fill(x,     y,     1, h, " ")
-  gpu.fill(x+w-1, y,     1, h, " ")
+  gpu.fill(x, y, w, 1, " ")
+  gpu.fill(x, y+h-1, w, 1, " ")
+  gpu.fill(x, y, 1, h, " ")
+  gpu.fill(x+w-1, y, 1, h, " ")
 end
 
 local function btn(x, y, w, h, label, active, color)
@@ -131,25 +147,37 @@ local function btn(x, y, w, h, label, active, color)
   local fg = active and C.dark or C.text
   fill(x, y, w, h, bg)
   local lx = x + math.floor((w - #label) / 2)
-  txt(lx, y + math.floor((h - 1) / 2), label, fg, bg)
-  return {x = x, y = y, w = w, h = h}
+  txt(lx, y + math.floor((h-1)/2), label, fg, bg)
+  return {x=x, y=y, w=w, h=h}
 end
 
--- Пиксельная турель
+-- Красивая пиксельная турель (как на твоём скрине)
 local function drawTurretIcon(x, y, bg)
   gpu.setBackground(bg)
-  -- ствол
-  gpu.setForeground(0xCCCCCC)
-  gpu.set(x+3, y,   "█")
-  gpu.set(x+3, y+1, "█")
-  -- голова
-  gpu.setForeground(C.purple)
-  gpu.set(x+1, y+2, "███")
-  gpu.set(x,   y+3, "█████")
-  -- основание
-  gpu.setForeground(0x666688)
-  gpu.set(x+1, y+4, "███")
-  gpu.set(x+2, y+5, "█")
+
+  -- Три красные энергоячейки
+  gpu.setForeground(0xFF2222)
+  gpu.set(x,   y,   "▌")
+  gpu.set(x+1, y,   "▌")
+  gpu.set(x+2, y,   "▌")
+  gpu.set(x,   y+1, "▌")
+  gpu.set(x+1, y+1, "▌")
+  gpu.set(x+2, y+1, "▌")
+  gpu.set(x,   y+2, "▌")
+  gpu.set(x+1, y+2, "▌")
+  gpu.set(x+2, y+2, "▌")
+
+  -- Фиолетовое ядро
+  gpu.setForeground(0xAA44FF)
+  gpu.set(x+5, y+1, "██")
+  gpu.set(x+5, y+2, "██")
+
+  -- Серый корпус / основание
+  gpu.setForeground(0x777788)
+  gpu.set(x+4, y,   "▄▄▄")
+  gpu.set(x+4, y+3, "▀▀▀")
+  gpu.set(x+5, y+4, "█")
+  gpu.set(x+4, y+5, "███")
 end
 
 ---------------------------------------------------------------
@@ -173,12 +201,19 @@ local function refreshTurrets()
       local powered = false
       pcall(function() powered = p.isPowered() end)
       local saved = (_G.__savedTurretData or {})[addr] or {}
+
+      -- Если нет сохранённой позиции — ставим дефолтный оффсет
+      local pos = saved.pos
+      if not pos then
+        pos = { x = DEFAULT_OFFSET.x, y = DEFAULT_OFFSET.y, z = DEFAULT_OFFSET.z }
+      end
+
       table.insert(newList, {
         addr = addr,
         proxy = p,
         powered = powered,
-        name = saved.name or ("T-" .. addr:sub(1, 6)),
-        pos = saved.pos,
+        name = saved.name or ("Турель " .. addr:sub(1, 8)),
+        pos = pos,
         yawFine = saved.yawFine or 0,
         pitchSign = saved.pitchSign or 1,
       })
@@ -189,7 +224,7 @@ local function refreshTurrets()
   table.sort(newList, function(a, b) return a.addr < b.addr end)
   turrets = newList
   if selected > #turrets then selected = math.max(1, #turrets) end
-  if #turrets == 1 then selected = 1 end
+  if #turrets >= 1 and selected < 1 then selected = 1 end
 end
 
 local function findDetector()
@@ -234,7 +269,7 @@ local function startCalibration()
     return
   end
   calibratingUntil = computer.uptime() + CALIB_DELAY
-  statusMsg = string.format("Калибровка %s через %.0f сек! Вставай под ствол!", t.name, CALIB_DELAY)
+  statusMsg = string.format("Калибровка через %.0f сек — встань под ствол!", CALIB_DELAY)
 end
 
 local function finishCalibration()
@@ -248,7 +283,7 @@ local function finishCalibration()
   local players = {}
   pcall(function() players = detector.scanPlayers(8) or {} end)
   if #players == 0 then
-    statusMsg = "Никого не видно под стволом!"
+    statusMsg = "Никого не видно!"
     calibratingUntil = 0
     return
   end
@@ -263,34 +298,33 @@ local function finishCalibration()
   }
   t.yawFine = 0
   saveConfig()
-  statusMsg = string.format("%s откалибрована: %.2f  %.2f  %.2f", t.name, t.pos.x, t.pos.y, t.pos.z)
+  statusMsg = string.format("%s откалибрована", t.name)
   calibratingUntil = 0
 end
 
 local function resetCalibration()
   local t = getSelected()
   if not t then return end
-  t.pos = nil
+  t.pos = { x = DEFAULT_OFFSET.x, y = DEFAULT_OFFSET.y, z = DEFAULT_OFFSET.z }
   t.yawFine = 0
   t.pitchSign = 1
   saveConfig()
-  statusMsg = t.name .. " — калибровка сброшена"
+  statusMsg = t.name .. " — сброшено на стандартный оффсет"
 end
 
 ---------------------------------------------------------------
--- Белый список (отдельный режим)
+-- Белый список
 ---------------------------------------------------------------
 local function addToWhitelist()
   term.clear()
-  print("Введи ник игрока для добавления в белый список:")
-  print("(пустое = отмена)")
+  print("Введи ник игрока (пусто = отмена):")
   local name = term.read()
   if name then
     name = name:gsub("%s+", ""):lower()
     if #name > 1 then
       whitelist[name] = true
       saveConfig()
-      statusMsg = "Добавлен в белый список: " .. name
+      statusMsg = "Добавлен: " .. name
     end
   end
   term.clear()
@@ -300,26 +334,19 @@ local function removeFromWhitelist()
   local list = {}
   for name, _ in pairs(whitelist) do table.insert(list, name) end
   table.sort(list)
-
   if #list == 0 then
-    statusMsg = "Белый список пуст"
+    statusMsg = "Список пуст"
     return
   end
-
   term.clear()
-  print("Кого удалить из белого списка?")
-  for i, name in ipairs(list) do
-    print(i .. ". " .. name)
-  end
-  print()
-  print("Введи номер (пусто = отмена):")
-  local input = term.read()
-  local num = tonumber(input)
+  print("Кого удалить?")
+  for i, name in ipairs(list) do print(i .. ". " .. name) end
+  print("\nНомер (пусто = отмена):")
+  local num = tonumber(term.read())
   if num and list[num] then
-    local removed = list[num]
-    whitelist[removed] = nil
+    whitelist[list[num]] = nil
     saveConfig()
-    statusMsg = "Удалён: " .. removed
+    statusMsg = "Удалён: " .. list[num]
   end
   term.clear()
 end
@@ -331,6 +358,12 @@ local function isPlayer(ent)
   if not ent then return false end
   local n = tostring(ent.name or ""):lower()
   return n == "player" or n == "entityplayer" or n == "entityplayermp"
+end
+
+local function isNeutral(ent)
+  if not ent or not ent.name then return false end
+  local n = tostring(ent.name):lower()
+  return NEUTRALS[n] or false
 end
 
 local function isItem(name)
@@ -351,6 +384,11 @@ local function shouldAttack(ent)
     if ent.displayName and whitelist[tostring(ent.displayName):lower()] then return false end
     return attackPlayers
   end
+
+  if isNeutral(ent) then
+    return attackNeutrals
+  end
+
   return attackMobs
 end
 
@@ -391,7 +429,7 @@ local function computeAim(t, ent)
     predY = cy + ((cy - prev.y) / dt) * PREDICTION_TIME
     predZ = cz + ((cz - prev.z) / dt) * PREDICTION_TIME
   end
-  previousPos[name] = {x = cx, y = cy, z = cz, t = now}
+  previousPos[name] = {x=cx, y=cy, z=cz, t=now}
 
   local dx = predX - t.pos.x
   local dy = (predY + 1.35) - t.pos.y
@@ -428,20 +466,17 @@ local function aimAndFire(t, ent)
   pcall(function() t.proxy.moveTo(yaw, pitch) end)
 
   local wait, onTarget = 0, false
-  while wait < 2.2 do
+  while wait < 2.1 do
     pcall(function() onTarget = t.proxy.isOnTarget() end)
     if onTarget then break end
     os.sleep(0.05)
     wait = wait + 0.05
   end
 
-  debugMsg = string.format("%s y:%.0f(%s) p:%.0f d:%.1f on:%s",
-    t.name, yaw, dirName(yaw), pitch, dist, tostring(onTarget))
+  debugMsg = string.format("%s y:%.0f(%s) p:%.0f d:%.1f %s",
+    t.name:sub(1,8), yaw, dirName(yaw), pitch, dist, onTarget and "OK" or "wait")
 
-  if not onTarget then
-    debugMsg = debugMsg .. " ждём"
-    return false
-  end
+  if not onTarget then return false end
 
   local now = computer.uptime()
   if (now - (lastFire[t.addr] or 0)) < FIRE_COOLDOWN then return false end
@@ -449,7 +484,7 @@ local function aimAndFire(t, ent)
   local fired = nil
   pcall(function() fired = t.proxy.fire() end)
   lastFire[t.addr] = now
-  debugMsg = debugMsg .. " выстр:" .. tostring(fired)
+  debugMsg = debugMsg .. " " .. tostring(fired)
   return fired
 end
 
@@ -461,21 +496,16 @@ local function doCombat()
     if t.powered and t.pos then anyOn = true break end
   end
   if not anyOn then
-    lastTarget = "турели выкл / нет калибровки"
+    lastTarget = "турели выкл"
     return
   end
-  if not (attackMobs or attackPlayers) then
+  if not (attackMobs or attackPlayers or attackNeutrals) then
     lastTarget = "атака выкл"
     return
   end
 
   local ents = getEntities()
-  local names = {}
-  for i = 1, math.min(4, #ents) do
-    table.insert(names, tostring(ents[i].name or "?"))
-  end
   statusMsg = "Скан: " .. #ents
-  if #names > 0 then statusMsg = statusMsg .. " → " .. table.concat(names, ", ") end
 
   if #ents == 0 then
     lastTarget = "нет целей"
@@ -491,7 +521,7 @@ local function doCombat()
       if shouldAttack(ent) and tostring(ent.name) == lockedTarget.name then
         local ddx = (ent.x or 0) - (lockedTarget.x or 0)
         local ddz = (ent.z or 0) - (lockedTarget.z or 0)
-        if ddx*ddx + ddz*ddz < 200 then
+        if ddx*ddx + ddz*ddz < 220 then
           target = ent
           lockedTarget.x, lockedTarget.y, lockedTarget.z = ent.x, ent.y, ent.z
           break
@@ -501,18 +531,13 @@ local function doCombat()
   end
 
   if not target then
-    local refPos = nil
-    for _, t in ipairs(turrets) do if t.pos then refPos = t.pos break end end
-    if not refPos then
-      lastTarget = "нет калибровки"
-      return
-    end
-
+    local ref = turrets[1] and turrets[1].pos
     table.sort(ents, function(a, b)
       local ap, bp = isPlayer(a), isPlayer(b)
       if ap ~= bp then return ap end
-      local da = ((a.x or 0)-refPos.x)^2 + ((a.z or 0)-refPos.z)^2
-      local db = ((b.x or 0)-refPos.x)^2 + ((b.z or 0)-refPos.z)^2
+      if not ref then return false end
+      local da = ((a.x or 0)-ref.x)^2 + ((a.z or 0)-ref.z)^2
+      local db = ((b.x or 0)-ref.x)^2 + ((b.z or 0)-ref.z)^2
       return da < db
     end)
 
@@ -530,7 +555,7 @@ local function doCombat()
   end
 
   if not target then
-    lastTarget = "белый список / фильтр"
+    lastTarget = "фильтр"
     return
   end
 
@@ -545,35 +570,35 @@ end
 ---------------------------------------------------------------
 local function drawCard(idx, t, x, y, w, h)
   local isSel = (idx == selected)
-  local borderCol = isSel and C.yellow or C.border
+  local borderCol = isSel and C.yellow or C.cardBorder
   local bgCol = isSel and C.selected or C.panel
 
   box(x, y, w, h, borderCol, bgCol)
 
-  txt(x + 2, y + 1, t.name .. (isSel and " ◀" or ""), isSel and C.yellow or C.text, bgCol)
-  txt(x + 2, y + 2, t.addr:sub(1, 11), C.gray, bgCol)
+  -- Название
+  local shortName = t.name
+  if #shortName > w - 4 then shortName = shortName:sub(1, w-5) .. "…" end
+  txt(x+2, y+1, shortName, isSel and C.yellow or C.text, bgCol)
 
-  drawTurretIcon(x + math.floor(w/2) - 2, y + 3, bgCol)
+  -- Иконка турели
+  drawTurretIcon(x + math.floor((w-8)/2), y+3, bgCol)
 
-  if t.pos then
-    txt(x + 2, y + 9, string.format("%.1f %.1f %.1f", t.pos.x, t.pos.y, t.pos.z), C.cyan, bgCol)
-  else
-    txt(x + 2, y + 9, "нет калибровки", C.red, bgCol)
-  end
-
+  -- Энергия
+  txt(x+2, y+9, "Энергия:", C.gray, bgCol)
   local barW = w - 4
-  fill(x + 2, y + 10, barW, 1, C.energyBg)
-  fill(x + 2, y + 10, t.powered and math.floor(barW * 0.85) or 2, 1, C.energy)
+  fill(x+2, y+10, barW, 1, C.energyBg)
+  fill(x+2, y+10, t.powered and math.floor(barW*0.9) or 3, 1, C.energy)
 
-  local bOn  = btn(x + 2,     y + h - 2, 6, 1, "ВКЛ",  t.powered, C.yellow)
-  local bOff = btn(x + w - 8, y + h - 2, 6, 1, "ВЫКЛ", not t.powered, C.gray)
+  -- Кнопки
+  local bOn  = btn(x+2,     y+h-2, 7, 1, "ВКЛ",  t.powered, C.yellow)
+  local bOff = btn(x+w-9,   y+h-2, 7, 1, "ВЫКЛ", not t.powered, C.gray)
 
-  buttons["on_" .. idx]  = {x=bOn.x,  y=bOn.y,  w=6, h=1, action=function() powerTurret(t, true) end}
-  buttons["off_" .. idx] = {x=bOff.x, y=bOff.y, w=6, h=1, action=function() powerTurret(t, false) end}
+  buttons["on_"..idx]  = {x=bOn.x, y=bOn.y, w=7, h=1, action=function() powerTurret(t,true) end}
+  buttons["off_"..idx] = {x=bOff.x,y=bOff.y,w=7, h=1, action=function() powerTurret(t,false) end}
 
-  buttons["sel_" .. idx] = {
-    x = x, y = y, w = w, h = h - 2,
-    action = function()
+  buttons["sel_"..idx] = {
+    x=x, y=y, w=w, h=h-2,
+    action=function()
       selected = idx
       statusMsg = "Выбрана: " .. t.name
       saveConfig()
@@ -583,20 +608,15 @@ end
 
 local function drawMainBottom()
   local y = screenH - 2
-  fill(1, y, screenW, 2, C.panel)
+  fill(1, y, screenW, 2, 0x101018)
 
   local items = {
-    {id="all_on",  label="Все ВКЛ",    col=C.yellow},
-    {id="all_off", label="Все ВЫКЛ",   col=C.gray},
-    {id="calib",   label="Калибровка", col=C.green},
-    {id="reset",   label="Сброс",      col=C.orange},
-    {id="left",    label="◀",          col=C.cyan},
-    {id="right",   label="▶",          col=C.cyan},
-    {id="flipP",   label="Наклон",     col=C.cyan},
-    {id="wl",      label="Белый список", col=C.green},
-    {id="mobs",    label="Мобы",       col=attackMobs and C.yellow or C.gray},
-    {id="players", label="Игроки",     col=attackPlayers and C.yellow or C.gray},
-    {id="exit",    label="Выход",      col=C.red},
+    {id="power",   label = "Турели ВЫКЛ",     col=C.gray},
+    {id="wl",      label = "Добавить игрока", col=C.yellow},
+    {id="mobs",    label = "Атака мобов",     col=attackMobs and C.yellow or C.gray},
+    {id="neutrals",label = "Атака нейтралов", col=attackNeutrals and C.yellow or C.gray},
+    {id="players", label = "Атака игроков",   col=attackPlayers and C.yellow or C.gray},
+    {id="exit",    label = "Выход",           col=C.gray},
   }
 
   local bx = 2
@@ -605,29 +625,19 @@ local function drawMainBottom()
     if bx + bw > screenW - 1 then break end
     btn(bx, y, bw, 2, it.label, true, it.col)
     buttons[it.id] = {
-      x = bx, y = y, w = bw, h = 2,
-      action = function()
-        local cur = getSelected()
-        if it.id == "all_on" then powerAll(true)
-        elseif it.id == "all_off" then powerAll(false)
-        elseif it.id == "calib" then startCalibration()
-        elseif it.id == "reset" then resetCalibration()
-        elseif it.id == "left" and cur then
-          cur.yawFine = (cur.yawFine or 0) - 1.5
-          saveConfig()
-          statusMsg = cur.name .. " yaw: " .. string.format("%.1f", cur.yawFine)
-        elseif it.id == "right" and cur then
-          cur.yawFine = (cur.yawFine or 0) + 1.5
-          saveConfig()
-          statusMsg = cur.name .. " yaw: " .. string.format("%.1f", cur.yawFine)
-        elseif it.id == "flipP" and cur then
-          cur.pitchSign = -(cur.pitchSign or 1)
-          saveConfig()
-          statusMsg = cur.name .. " наклон: " .. cur.pitchSign
+      x=bx, y=y, w=bw, h=2,
+      action=function()
+        if it.id == "power" then
+          local anyOn = false
+          for _, t in ipairs(turrets) do if t.powered then anyOn=true break end end
+          powerAll(not anyOn)
         elseif it.id == "wl" then
           mode = "whitelist"
         elseif it.id == "mobs" then
           attackMobs = not attackMobs
+          saveConfig()
+        elseif it.id == "neutrals" then
+          attackNeutrals = not attackNeutrals
           saveConfig()
         elseif it.id == "players" then
           attackPlayers = not attackPlayers
@@ -645,43 +655,40 @@ local function drawWhitelistUI()
   buttons = {}
   fill(1, 1, screenW, screenH, C.bg)
   center(1, "═══ Белый список ═══", C.title, C.bg)
-  txt(2, 3, "Игроки, по которым турели НЕ стреляют:", C.text, C.bg)
+  txt(3, 3, "Игроки, которых турели игнорируют:", C.text, C.bg)
 
   local list = {}
-  for name, _ in pairs(whitelist) do table.insert(list, name) end
+  for name,_ in pairs(whitelist) do table.insert(list, name) end
   table.sort(list)
 
   if #list == 0 then
-    txt(4, 5, "Список пуст", C.gray, C.bg)
+    txt(5, 5, "Список пуст", C.gray, C.bg)
   else
     for i, name in ipairs(list) do
-      if 5 + i < screenH - 4 then
-        txt(4, 4 + i, i .. ". " .. name, C.cyan, C.bg)
+      if 4+i < screenH-4 then
+        txt(5, 4+i, i..". "..name, C.cyan, C.bg)
       end
     end
   end
 
-  -- кнопки внизу
-  local y = screenH - 2
-  fill(1, y, screenW, 2, C.panel)
+  local y = screenH-2
+  fill(1, y, screenW, 2, 0x101018)
 
   local items = {
     {id="add",  label="Добавить", col=C.green},
     {id="rem",  label="Удалить",  col=C.orange},
     {id="back", label="Назад",    col=C.yellow},
   }
-
-  local bx = 2
+  local bx = 3
   for _, it in ipairs(items) do
     local bw = #it.label + 2
     btn(bx, y, bw, 2, it.label, true, it.col)
     buttons[it.id] = {
-      x = bx, y = y, w = bw, h = 2,
-      action = function()
-        if it.id == "add" then addToWhitelist()
-        elseif it.id == "rem" then removeFromWhitelist()
-        elseif it.id == "back" then mode = "main"
-        end
+      x=bx, y=y, w=bw, h=2,
+      action=function()
+        if it.id=="add" then addToWhitelist()
+        elseif it.id=="rem" then removeFromWhitelist()
+        elseif it.id=="back" then mode="main" end
       end
     }
     bx = bx + bw + 2
@@ -691,37 +698,34 @@ end
 local function drawMainUI()
   buttons = {}
   fill(1, 1, screenW, screenH, C.bg)
-  center(1, "═══ ECS® Security Systems v20 ═══", C.title, C.bg)
+  center(1, "═══ ECS® Security Systems v21 ═══", C.title, C.bg)
 
-  local t = getSelected()
   if calibratingUntil > 0 then
     local left = math.max(0, calibratingUntil - computer.uptime())
-    txt(2, 2, string.format(">>> КАЛИБРОВКА через %.1f сек — вставай под ствол! <<<", left), C.orange, C.bg)
-  elseif t and t.pos then
-    txt(2, 2, string.format("Выбрана: %s | Ствол: %.2f  %.2f  %.2f | yaw:%.1f",
-      t.name, t.pos.x, t.pos.y, t.pos.z, t.yawFine or 0), C.text, C.bg)
+    txt(2, 2, string.format(">>> Калибровка через %.1f сек — встань под ствол! <<<", left), C.orange, C.bg)
   else
-    txt(2, 2, "Выбери турель → Калибровка (5 сек) → встань под ствол", C.orange, C.bg)
+    local t = getSelected()
+    if t then
+      txt(2, 2, string.format("Выбрана: %s   yaw: %.1f", t.name, t.yawFine or 0), C.text, C.bg)
+    end
   end
 
   local cols = math.min(4, math.max(1, #turrets))
-  if #turrets == 0 then cols = 1 end
-  local cardW = math.floor((screenW - 4 - (cols - 1)) / cols)
-  local cardH = 13
+  local cardW = math.floor((screenW - 5 - (cols-1)*1) / cols)
+  local cardH = 14
 
   for i, t in ipairs(turrets) do
-    local col = (i - 1) % cols
-    local row = math.floor((i - 1) / cols)
+    local col = (i-1) % cols
+    local row = math.floor((i-1) / cols)
     local x = 2 + col * (cardW + 1)
     local y = 4 + row * (cardH + 1)
-    if y + cardH < screenH - 5 then
+    if y + cardH < screenH - 4 then
       drawCard(i, t, x, y, cardW, cardH)
     end
   end
 
-  txt(2, screenH - 6, "Цель: " .. tostring(lastTarget), C.orange, C.bg)
-  txt(2, screenH - 5, statusMsg, C.cyan, C.bg)
-  txt(2, screenH - 4, "Отладка: " .. tostring(debugMsg), C.yellow, C.bg)
+  txt(2, screenH-5, "Цель: " .. tostring(lastTarget), C.orange, C.bg)
+  txt(2, screenH-4, statusMsg .. "   " .. tostring(debugMsg), C.cyan, C.bg)
   drawMainBottom()
 end
 
@@ -772,7 +776,7 @@ local function main()
     if e == "touch" and button == 0 then
       local handled = false
       for id, b in pairs(buttons) do
-        if not id:find("^sel_") and x >= b.x and x < b.x + b.w and y >= b.y and y < b.y + b.h then
+        if not id:find("^sel_") and x >= b.x and x < b.x+b.w and y >= b.y and y < b.y+b.h then
           b.action()
           handled = true
           break
@@ -780,7 +784,7 @@ local function main()
       end
       if not handled then
         for id, b in pairs(buttons) do
-          if id:find("^sel_") and x >= b.x and x < b.x + b.w and y >= b.y and y < b.y + b.h then
+          if id:find("^sel_") and x >= b.x and x < b.x+b.w and y >= b.y and y < b.y+b.h then
             b.action()
             break
           end
