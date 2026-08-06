@@ -1,9 +1,10 @@
 -- ============================================================
--- ECS® Security Systems v27
+-- ECS® Security Systems v28
 -- Стабильный интерфейс + нормальная иконка турели
--- Фикс: иконка — длинный ствол, понятная форма
--- Фикс: турели больше не стреляют выше цели (исправлена калибровка)
--- Фикс: кнопка "Игроки" теперь реально работает (жёсткое определение игроков)
+-- Фикс: иконка — длинный ствол, боковой вид
+-- Фикс: турели больше не стреляют выше цели
+-- Фикс: кнопка "Игроки" работает
+-- Фикс: мобы снова видятся (исправлено слишком агрессивное определение игроков)
 -- ============================================================
 
 local component = require("component")
@@ -73,7 +74,7 @@ local MOBS = {
   zombie_villager=true, husk=true, stray=true, vex=true, vindicator=true,
   evoker=true, illusioner=true, phantom=true, drowned=true, pillager=true,
   ravager=true, hoglin=true, piglin=true, zoglin=true, strider=true,
-  wither_skeleton=true, zombie_pigman=true,
+  wither_skeleton=true, zombie_pigman=true, giant=true, ender_dragon=true,
 }
 
 ---------------------------------------------------------------
@@ -161,28 +162,28 @@ local function btn(x, y, w, h, label, active, color)
   return {x=x, y=y, w=w, h=h}
 end
 
--- Турель с длинным стволом (вид сбоку)
+-- Боковой вид турели с длинным стволом (не шапка гвоздя)
 local function drawTurretIcon(x, y, bg)
   gpu.setBackground(bg)
 
-  -- Длинный ствол
-  gpu.setForeground(0xDDDDEE)
-  gpu.set(x,     y+1, "██████████████")
-  gpu.set(x+14,  y+1, "█")
+  -- Длинный горизонтальный ствол
+  gpu.setForeground(0xCCCCDD)
+  gpu.set(x,     y+1, "████████████████")
+  gpu.set(x+16,  y+1, "█")
 
-  -- Голова
-  gpu.setForeground(0xAAAABB)
-  gpu.set(x+5,   y,   "████")
-  gpu.set(x+4,   y+2, "██████")
+  -- Голова / казённая часть
+  gpu.setForeground(0x9999AA)
+  gpu.set(x+2,   y,   "████")
+  gpu.set(x+1,   y+2, "██████")
 
-  -- Поворотный узел
-  gpu.setForeground(0x777788)
-  gpu.set(x+6,   y+3, "████")
+  -- Поворотный механизм
+  gpu.setForeground(0x666677)
+  gpu.set(x+3,   y+3, "████")
 
   -- Основание
-  gpu.setForeground(0x555566)
-  gpu.set(x+5,   y+4, "██████")
-  gpu.set(x+4,   y+5, "████████")
+  gpu.setForeground(0x444455)
+  gpu.set(x+2,   y+4, "██████")
+  gpu.set(x+1,   y+5, "████████")
 end
 
 ---------------------------------------------------------------
@@ -362,19 +363,32 @@ local function isPlayer(ent)
 
   local n = tostring(ent.name or ""):lower()
 
-  -- Классические обозначения игрока
+  -- Явные обозначения игрока
   if n == "player" or n == "entityplayer" or n == "entityplayermp" then
     return true
   end
   if ent.username or ent.displayName then return true end
 
-  -- Нейтралы и мобы — не игроки
+  -- Известные мобы и нейтралы — не игроки
   if NEUTRALS[n] or MOBS[n] then return false end
 
-  -- Если имя содержит точку или "entity." — скорее всего моб/сущность
+  -- Ключевые слова мобов (на случай разных названий от детектора)
+  if n:find("zombie") or n:find("skeleton") or n:find("creeper") or
+     n:find("spider") or n:find("enderman") or n:find("witch") or
+     n:find("slime") or n:find("blaze") or n:find("ghast") or
+     n:find("pigman") or n:find("wither") or n:find("guardian") or
+     n:find("shulker") or n:find("phantom") or n:find("drowned") or
+     n:find("pillager") or n:find("ravager") or n:find("hoglin") or
+     n:find("piglin") or n:find("vex") or n:find("vindicator") or
+     n:find("evoker") or n:find("illusion") or n:find("stray") or
+     n:find("husk") or n:find("silverfish") or n:find("endermite") then
+    return false
+  end
+
+  -- Полные имена сущностей
   if n:find("%.") or n:find("entity") then return false end
 
-  -- Всё остальное (ники вроде hellbreez) считаем игроком
+  -- Простые ники (hellbreez и т.п.) — игроки
   if #n >= 3 then return true end
 
   return false
@@ -388,7 +402,7 @@ end
 local function isItem(name)
   if not name then return true end
   local n = tostring(name):lower()
-  return n == "item" or n:find("^item%.") or n:find("entityitem")
+  return n == "item" or n:find("^item%.") or n:find("entityitem") or n:find("xp") or n:find("orb")
 end
 
 local function shouldAttack(ent)
@@ -600,8 +614,8 @@ local function drawCard(idx, t, x, y, w, h)
   if #shortName > w-4 then shortName = shortName:sub(1, w-5) .. "…" end
   txt(x+2, y+1, shortName, isSel and C.yellow or C.text, bgCol)
 
-  -- центрируем иконку (ширина ~15)
-  drawTurretIcon(x + math.floor((w-15)/2), y+3, bgCol)
+  -- центрируем иконку (ширина ~17)
+  drawTurretIcon(x + math.floor((w-17)/2), y+3, bgCol)
 
   if not t.pos then
     txt(x+2, y+9, "нет калибровки", C.red, bgCol)
@@ -719,7 +733,7 @@ end
 local function drawMainUI()
   buttons = {}
   fill(1, 1, screenW, screenH, C.bg)
-  center(1, "═══ ECS® Security Systems v27 ═══", C.title, C.bg)
+  center(1, "═══ ECS® Security Systems v28 ═══", C.title, C.bg)
 
   if calibratingUntil > 0 then
     local left = math.max(0, calibratingUntil - computer.uptime())
