@@ -1,8 +1,8 @@
 -- ============================================================
--- ECS® Security Systems v24
+-- ECS® Security Systems v25
 -- Стабильный интерфейс + нормальная иконка турели
 -- Фикс: иконка больше не похожа на гранату
--- Фикс: турели больше не стреляют выше цели
+-- Фикс: турели больше не стреляют выше цели (исправлена калибровка)
 -- ============================================================
 
 local component = require("component")
@@ -20,7 +20,7 @@ local COMBAT_EVERY = 0.32
 local LOCK_TIME = 2.8
 local PREDICTION_TIME = 0.35
 local CALIB_DELAY = 5.0
-local AIM_HEIGHT = 0.3          -- чем меньше — тем ниже целится (было 1.35)
+local AIM_HEIGHT = 0.9           -- высота прицеливания относительно ног цели (0.0 = ноги, 1.6 = глаза)
 local CONFIG_PATH = "/home/turret_cfg.lua"
 
 local C = {
@@ -73,6 +73,7 @@ local function saveConfig()
     tdata[t.addr] = {
       pos = t.pos,
       yawFine = t.yawFine or 0,
+      pitchBias = t.pitchBias or 0,
       pitchSign = t.pitchSign or 1,
       name = t.name,
     }
@@ -201,6 +202,7 @@ local function refreshTurrets()
         name = saved.name or ("Турель " .. addr:sub(1, 8)),
         pos = saved.pos,
         yawFine = saved.yawFine or 0,
+        pitchBias = saved.pitchBias or 0,
         pitchSign = saved.pitchSign or 1,
       })
       lastFire[addr] = 0
@@ -277,14 +279,17 @@ local function finishCalibration()
   table.sort(players, function(a, b) return (a.range or 99) < (b.range or 99) end)
   local p = players[1]
 
+  -- ВАЖНО: когда стоишь ПОД стволом, высота ствола ≈ глаза игрока (+1.55)
+  -- Старый вариант (y - 1.12) ставил позицию турели слишком низко → ствол всегда смотрел вверх
   t.pos = {
     x = p.x or 0,
-    y = (p.y or 0) - 1.12,
+    y = (p.y or 0) + 1.55,
     z = p.z or 0,
   }
   t.yawFine = 0
+  t.pitchBias = 0
   saveConfig()
-  statusMsg = string.format("%s откалибрована", t.name)
+  statusMsg = string.format("%s откалибрована (Y=%.2f)", t.name, t.pos.y)
   calibratingUntil = 0
 end
 
@@ -293,6 +298,7 @@ local function resetCalibration()
   if not t then return end
   t.pos = nil
   t.yawFine = 0
+  t.pitchBias = 0
   t.pitchSign = 1
   saveConfig()
   statusMsg = t.name .. " — калибровка сброшена"
@@ -421,7 +427,9 @@ local function computeAim(t, ent)
   yaw = yaw % 360
   if yaw < 0 then yaw = yaw + 360 end
 
+  -- pitchBias позволяет тонко подкрутить вертикаль без перекалибровки
   local pitch = math.deg(math.atan2(dy, math.max(distXZ, 0.12))) * (t.pitchSign or 1)
+  pitch = pitch + (t.pitchBias or 0)
   pitch = math.max(-45, math.min(90, pitch))
 
   return yaw, pitch, dist
@@ -452,7 +460,7 @@ local function aimAndFire(t, ent)
     wait = wait + 0.05
   end
 
-  debugMsg = string.format("%s y:%.0f(%s) p:%.0f d:%.1f %s",
+  debugMsg = string.format("%s y:%.0f(%s) p:%.1f d:%.1f %s",
     t.name:sub(1,9), yaw, dirName(yaw), pitch, dist, onTarget and "OK" or "wait")
 
   if not onTarget then return false end
@@ -678,7 +686,7 @@ end
 local function drawMainUI()
   buttons = {}
   fill(1, 1, screenW, screenH, C.bg)
-  center(1, "═══ ECS® Security Systems v24 ═══", C.title, C.bg)
+  center(1, "═══ ECS® Security Systems v25 ═══", C.title, C.bg)
 
   if calibratingUntil > 0 then
     local left = math.max(0, calibratingUntil - computer.uptime())
@@ -687,8 +695,8 @@ local function drawMainUI()
     local t = getSelected()
     if t then
       if t.pos then
-        txt(2, 2, string.format("Выбрана: %s | %.1f %.1f %.1f | yaw:%.1f",
-          t.name, t.pos.x, t.pos.y, t.pos.z, t.yawFine or 0), C.text, C.bg)
+        txt(2, 2, string.format("Выбрана: %s | %.1f %.1f %.1f | yaw:%.1f bias:%.1f",
+          t.name, t.pos.x, t.pos.y, t.pos.z, t.yawFine or 0, t.pitchBias or 0), C.text, C.bg)
       else
         txt(2, 2, "Выбрана: " .. t.name .. "  —  нужна калибровка", C.orange, C.bg)
       end
